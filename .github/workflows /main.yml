@@ -1,0 +1,35 @@
+name: reinstall
+
+on:
+  schedule:
+    - cron: '55 02 * * *'
+    - cron: '55 13 * * *'
+  workflow_dispatch:  # 允许手动触发
+
+jobs:
+  clone:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 检出当前仓库
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # 克隆目标仓库
+      - name: Clone reinstall
+        run: git clone https://github.com/bin456789/reinstall.git
+
+      # 复制文件到当前仓库
+      - name: Copy files
+        run: cp -r reinstall/* .
+
+      # 提交并推送更改到自己的仓库
+      - name: Commit 和 push changes
+        run: |
+          git config --global user.name "github-actions"
+          git config --global user.email "github-actions@github.com"
+          git add .
+          git commit -m "reinstall"
+          git push origin main
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # 使用自动生成的 GITHUB_TOKEN 进行认证
