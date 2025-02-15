@@ -612,15 +612,28 @@ is_staticv6() {
     return 1
 }
 
-should_disable_ra_slaac() {
-    get_netconf_to should_disable_ra_slaac
+is_dhcpv6_or_slaac() {
+    get_netconf_to dhcpv6_or_slaac
     # shellcheck disable=SC2154
-    [ "$should_disable_ra_slaac" = 1 ]
+    [ "$dhcpv6_or_slaac" = 1 ]
+}
+
+should_disable_accept_ra() {
+    get_netconf_to should_disable_accept_ra
+    # shellcheck disable=SC2154
+    [ "$should_disable_accept_ra" = 1 ]
+}
+
+should_disable_autoconf() {
+    get_netconf_to should_disable_autoconf
+    # shellcheck disable=SC2154
+    [ "$should_disable_autoconf" = 1 ]
 }
 
 is_slaac() {
+    # 如果是静态（包括自动获取到 IP 但无法联网而切换成静态）直接返回 1，不考虑 ra
     # 防止部分机器slaac/dhcpv6获取的ip/网关无法上网
-    if should_disable_ra_slaac; then
+    if ! is_dhcpv6_or_slaac; then
         return 1
     fi
     get_netconf_to slaac
@@ -629,8 +642,9 @@ is_slaac() {
 }
 
 is_dhcpv6() {
+    # 如果是静态（包括自动获取到 IP 但无法联网而切换成静态）直接返回 1，不考虑 ra
     # 防止部分机器slaac/dhcpv6获取的ip/网关无法上网
-    if should_disable_ra_slaac; then
+    if ! is_dhcpv6_or_slaac; then
         return 1
     fi
     get_netconf_to dhcpv6
@@ -996,7 +1010,7 @@ EOF
         fi
 
         # 禁用 ra
-        if should_disable_ra_slaac; then
+        if should_disable_accept_ra; then
             if [ "$distro" = alpine ]; then
                 cat <<EOF >>$conf_file
     pre-up echo 0 >/proc/sys/net/ipv6/conf/$ethx/accept_ra
@@ -1004,6 +1018,19 @@ EOF
             else
                 cat <<EOF >>$conf_file
     accept_ra 0
+EOF
+            fi
+        fi
+
+        # 禁用 autoconf
+        if should_disable_autoconf; then
+            if [ "$distro" = alpine ]; then
+                cat <<EOF >>$conf_file
+    pre-up echo 0 >/proc/sys/net/ipv6/conf/$ethx/autoconf
+EOF
+            else
+                cat <<EOF >>$conf_file
+    autoconf 0
 EOF
             fi
         fi
@@ -1134,15 +1161,17 @@ EOF
     # fi
     # ...
 
-    # 禁用 ra
+    # 禁用 ra/autoconf
+    local mode=1
     for ethx in $(get_eths); do
-        if should_disable_ra_slaac; then
-            mode=1
-            if [ "$mode" = 1 ]; then
+        if should_disable_accept_ra; then
+            case "$mode" in
+            1)
                 cat <<EOF >>$conf_file
 boot.kernel.sysctl."net.ipv6.conf.$ethx.accept_ra" = false;
 EOF
-            elif [ "$mode" = 2 ]; then
+                ;;
+            2)
                 # nixos 配置静态 ip 时用的是脚本
                 # 好像因此不起作用
                 cat <<EOF >>$conf_file
@@ -1152,7 +1181,8 @@ networking.dhcpcd.extraConfig =
       ipv6ra_noautoconf
   '';
 EOF
-            elif [ "$mode" = 3 ]; then
+                ;;
+            3)
                 # 暂时没用到 networkd
                 cat <<EOF >>$conf_file
 systemd.network.networks.$ethx = {
@@ -1162,10 +1192,22 @@ systemd.network.networks.$ethx = {
    };
  };
 EOF
-            fi
+                ;;
+            esac
+        fi
+
+        if should_disable_autoconf; then
+            case "$mode" in
+            1)
+                cat <<EOF >>$conf_file
+boot.kernel.sysctl."net.ipv6.conf.$ethx.autoconf" = false;
+EOF
+                ;;
+            2) ;;
+            3) ;;
+            esac
         fi
     done
-
 }
 
 install_alpine() {
@@ -2351,7 +2393,8 @@ create_cloud_init_network_config() {
                     \"address\": \"$ipv6_addr\",
                     \"gateway\": \"$ipv6_gateway\" }
                     " $ci_file
-            if should_disable_ra_slaac; then
+            # 无法设置 autoconf = false ?
+            if should_disable_accept_ra; then
                 yq -i ".network.config[$config_id].accept-ra = false" $ci_file
             fi
         fi
@@ -4808,8 +4851,7 @@ install_windows() {
         info "Add drivers"
 
         drv=/os/drivers
-        mkdir -p "$drv"         # 驱动下载临时文件夹
-        mkdir -p "/wim/drivers" # boot.wim 驱动文件夹
+        mkdir -p "$drv" # 驱动下载临时文件夹
 
         # 这里有坑
         # $(get_cloud_vendor) 调用了 cache_dmi_and_virt
@@ -4869,6 +4911,9 @@ install_windows() {
             add_driver_gcp
             ;;
         esac
+
+        # 自定义驱动
+        add_driver_custom
     }
 
     # aws nitro
@@ -5230,6 +5275,23 @@ install_windows() {
         cp_drivers $drv/vmd
     }
 
+    # 脚本自动检测驱动可能有问题
+    # 假设是 win7 时代的网卡，官网没有 win10 驱动，系统也不自带
+    # 但实际上 win10 可以用 win7 的驱动
+    # 这种情况即使脚本自动下载 win10 的驱动包，也不会包含这个驱动
+    # 应该下载 win7 的驱动
+    # 因此只能交给用户自己添加驱动
+
+    add_driver_custom() {
+        for dir in /custom_drivers/*; do
+            if [ -d "$dir" ]; then
+                info "Add custom drivers: $dir"
+                cp_drivers custom "$dir"
+                # 复制后不删除，因为脚本可能再次运行
+            fi
+        done
+    }
+
     # 修改应答文件
     download $confhome/windows.xml /tmp/autounattend.xml
     locale=$(get_selected_image_prop 'Default Language')
@@ -5284,6 +5346,14 @@ install_windows() {
     wimmountrw /os/boot.wim "$boot_index" /wim/
 
     cp_drivers() {
+        if [ "$1" = custom ]; then
+            shift
+            dst="/wim/custom_drivers/$(basename "$1")"
+        else
+            dst=/wim/drivers
+        fi
+        mkdir -p "$dst"
+
         src=$1
         shift
 
@@ -5292,7 +5362,7 @@ install_windows() {
             -not -iname "*.pdb" \
             -not -iname "dpinst.exe" \
             "$@" \
-            -exec cp -rfv {} /wim/drivers \;
+            -exec cp -rfv {} "$dst" \;
     }
 
     # 添加驱动
@@ -5320,6 +5390,7 @@ install_windows() {
 
     # 复制安装脚本
     # https://slightlyovercomplicated.com/2016/11/07/windows-pe-startup-sequence-explained/
+    # https://learn.microsoft.com/previous-versions/windows/it-pro/windows-vista/cc721977(v=ws.10)
     mv /wim/setup.exe /wim/setup.exe.disabled
 
     # 如果有重复的 Windows/System32 文件夹，会提示找不到 winload.exe 无法引导
@@ -5328,6 +5399,26 @@ install_windows() {
     # shellcheck disable=SC2010
     system32_dir=$(ls -d /wim/*/*32 | grep -i windows/system32)
     download $confhome/windows-setup.bat $system32_dir/startnet.cmd
+    # dism 手动释放镜像时用
+    # sed -i "s|@image_name@|$image_name|" $system32_dir/startnet.cmd
+
+    # shellcheck disable=SC2154
+    if [ "$force_old_windows_setup" = 1 ]; then
+        sed -i 's/ForceOldSetup=0/ForceOldSetup=1/i' $system32_dir/startnet.cmd
+    fi
+
+    # Windows Thin PC 有 Windows\System32\winpeshl.ini
+    # [LaunchApps]
+    # %SYSTEMDRIVE%\windows\system32\drvload.exe, %SYSTEMDRIVE%\windows\inf\sdbus.inf
+    # %SYSTEMDRIVE%\setup.exe
+    if [ -f $system32_dir/winpeshl.ini ]; then
+        info "mod winpeshl.ini"
+        # https://learn.microsoft.com/previous-versions/windows/it-pro/windows-vista/cc721977(v=ws.10)
+        # 两种方法都可以，第一种是原版命令
+        sed -i 's|setup.exe|windows\\system32\\cmd.exe, "/k %SYSTEMROOT%\\system32\\startnet.cmd"|i' $system32_dir/winpeshl.ini
+        # sed -i 's|setup.exe|windows\\system32\\startnet.cmd|i' $system32_dir/winpeshl.ini
+        cat -n $system32_dir/winpeshl.ini
+    fi
 
     # 提交修改 boot.wim
     info "Unmount boot.wim"
