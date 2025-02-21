@@ -15,7 +15,7 @@ One-Click Script to Reinstall System [中文](README.md)
 
 ## Highlights
 
-- One-click Linux installation: Supports 17 common distributions.
+- One-click Linux installation: Supports 18 common distributions.
 - One-click Windows installation: Uses the official ISO for installation instead of custom images. The script automatically retrieves the ISO link and installs `Virtio` and other drivers.
 - Supports installation in any direction, i.e., `Linux to Linux`, `Linux to Windows`, `Windows to Windows`, `Windows to Linux`
 - No need to input IP parameters; automatically recognizes dynamic and static IPs, supports `/32`, `/128`, `gateway outside subnet`, `IPv6 only`, `dual NIC` and other special network configurations
@@ -31,7 +31,7 @@ The original system can be any system listed in the table.
 
 The system requirements for the target system are as follows:
 
-| Target System                                                                                                                                                                                                                                                                                                                                                          | Version                               | Memory    | Disk             |
+| System                                                                                                                                                                                                                                                                                                                                                                 | Version                               | Memory    | Disk             |
 | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------- | --------- | -----------------|
 | <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine                                                                                                                                                                                                                                                                                | 3.18, 3.19, 3.20, 3.21                | 256 MB    | 1 GB             |
 | <img width="16" height="16" src="https://www.debian.org/favicon.ico" /> Debian                                                                                                                                                                                                                                                                                         | 9, 10, 11, 12                         | 256 MB    | 1 ~ 1.5 GB ^     |
@@ -47,6 +47,7 @@ The system requirements for the target system are as follows:
 | <img width="16" height="16" src="https://github.com/user-attachments/assets/99a542b6-6482-4086-addf-f192c06fef73" /> NixOS                                                                                                                                                                                                                                             | 24.11                                 | 512 MB    | 5 GB             |
 | <img width="16" height="16" src="https://archlinux.org/static/favicon.png" /> Arch                                                                                                                                                                                                                                                                                     | Rolling                               | 512 MB    | 5 GB             |
 | <img width="16" height="16" src="https://www.gentoo.org/assets/img/logo/gentoo-g.png" /> Gentoo                                                                                                                                                                                                                                                                        | Rolling                               | 512 MB    | 5 GB             |
+| <img width="16" height="16" src="https://www.fnnas.com/favicon.ico" /> 飞牛 fnOS                                                                                                                                                                                                                                                                                       | Beta                                  | 512 MB    | 12 GB            |
 | <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (DD)                                                                                                                                                                                                              | Any                                   | 512 MB    | Depends on image |
 | <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | Vista, 7, 8.x (Server 2008 - 2012 R2) | 512 MB    | 25 GB            |
 | <img width="16" height="16" src="https://blogs.windows.com/wp-content/uploads/prod/2022/09/cropped-Windows11IconTransparent512-32x32.png" /> Windows (ISO)                                                                                                                                                                                                             | 10, 11 (Server 2016 - 2025)           | 1 GB      | 25 GB            |
@@ -111,8 +112,9 @@ certutil -urlcache -f -split https://gitlab.com/bin456789/reinstall/-/raw/main/r
 
 **All features** can be used on both Linux and Windows.
 
-- on Linux, execute `bash reinstall.sh`
-- on Windows, execute `.\reinstall.bat`
+- on Linux, run `bash reinstall.sh ...`
+- on Windows, first run `cmd`, then run `.\reinstall.bat ...`
+  - If the link in the parameter contains special characters, it should be enclosed in `""`, not `''`.
 
 ### Feature 1: Install <img width="16" height="16" src="https://www.kernel.org/theme/images/logos/favicon.png" /> Linux
 
@@ -127,7 +129,7 @@ certutil -urlcache -f -split https://gitlab.com/bin456789/reinstall/-/raw/main/r
 bash reinstall.sh anolis      7|8|23
                   opencloudos 8|9|23
                   rocky       8|9
-                  redhat      8|9   --img='http://xxx.com/xxx.qcow2'
+                  redhat      8|9   --img="http://xxx.com/xxx.qcow2"
                   oracle      8|9
                   almalinux   8|9
                   centos      9|10
@@ -141,6 +143,7 @@ bash reinstall.sh anolis      7|8|23
                   kali
                   arch
                   gentoo
+                  fnos
 ```
 
 #### Optional Parameters
@@ -195,7 +198,7 @@ bash reinstall.sh ubuntu --installer
 - When deploy a Linux image, will **NOT** modify any contents of the image.
 
 ```bash
-bash reinstall.sh dd --img https://example.com/xxx.xz
+bash reinstall.sh dd --img "https://example.com/xxx.xz"
 ```
 
 #### Optional parameters
@@ -264,7 +267,7 @@ bash reinstall.sh netboot.xyz
 
 ```bash
 bash reinstall.sh windows \
-     --image-name 'Windows 11 Enterprise LTSC 2024' \
+     --image-name "Windows 11 Enterprise LTSC 2024" \
      --lang zh-cn
 ```
 
@@ -321,8 +324,8 @@ zh-tw
 
 ```bash
 bash reinstall.sh windows \
-     --image-name 'Windows 11 Enterprise LTSC 2024' \
-     --iso 'https://go.microsoft.com/fwlink/?linkid=2289029'
+     --image-name "Windows 11 Enterprise LTSC 2024" \
+     --iso "https://go.microsoft.com/fwlink/?linkid=2289029"
 ```
 
 <details>
@@ -357,13 +360,13 @@ bash reinstall.sh windows \
 - `--rdp-port PORT` Change RDP port
 - `--ssh-port PORT` Change SSH port (for log observation during installation)
 - `--web-port PORT` Change Web port (for log observation during installation)
-- `--add-driver-dir DIR` Adds an additional driver folder, specifying the folder where the .inf file is located.
+- `--add-driver-dir DIR` Adds additional driver, specifying the folder where the .inf file is located.
   - The driver must be downloaded locally first.
   - This parameter can be set multiple times to add different driver folders.
   - The script will copy the entire folder, so no other files should be placed inside the folder.
 - `--hold 2` Allow SSH connections for modifying the disk content before rebooting into the official Windows installation program, with the disk mounted at `/os`.
 
-#### The script will automatic download and install the following drivers as needed, without the need for manual addition
+#### The following drivers will automatic download and install as needed, without the need for manual addition
 
 - Virtio ([Virtio](https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/), [Alibaba Cloud](https://www.alibabacloud.com/help/ecs/user-guide/update-red-hat-virtio-drivers-of-windows-instances))
 - XEN ([XEN](https://xenproject.org/resources/downloads/), [Citrix](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/Upgrading_PV_drivers.html#win2008-citrix-upgrade), [AWS](https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/xen-drivers-overview.html))

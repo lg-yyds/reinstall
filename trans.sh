@@ -84,12 +84,13 @@ wget() {
 }
 
 is_have_cmd() {
-    command -v "$1" >/dev/null
+    # command -v 包括脚本里面的方法
+    is_have_cmd_on_disk / "$1"
 }
 
 is_have_cmd_on_disk() {
-    os_dir=$1
-    cmd=$2
+    local os_dir=$1
+    local cmd=$2
 
     for bin_dir in /bin /sbin /usr/bin /usr/sbin; do
         if [ -f "$os_dir$bin_dir/$cmd" ]; then
@@ -127,6 +128,18 @@ retry() {
     done
 }
 
+get_url_type() {
+    if [[ "$1" = magnet:* ]]; then
+        echo bt
+    else
+        echo http
+    fi
+}
+
+is_magnet_link() {
+    [[ "$1" = magnet:* ]]
+}
+
 download() {
     url=$1
     path=$2
@@ -138,26 +151,17 @@ download() {
     # https://aria2.github.io/manual/en/html/aria2c.html#cmdoption-o
 
     # 构造 aria2 参数
-    # 没有指定文件名的情况
-    if [ -z "$path" ]; then
-        save=""
-    else
-        # 文件名是绝对路径
-        if [[ "$path" = '/*' ]]; then
-            save="-d / -o $path"
-        else
-            # 文件名是相对路径
-            save="-o $path"
-        fi
+    save=
+    # 文件夹
+    if [[ "$path" = '/*' ]]; then
+        save="$save -d /"
     fi
-
-    if ! is_have_cmd aria2c; then
-        apk add aria2
-    fi
-
-    # stdbuf 在 coreutils 包里面
-    if ! is_have_cmd stdbuf; then
-        apk add coreutils
+    # 文件名
+    if [ -n "$path" ]; then
+        case "$(get_url_type "$url")" in
+        http) save="$save -o $path" ;;
+        bt) save="$save -O 1=$path" ;;
+        esac
     fi
 
     # 阿里云源限速，而且检测 user-agent 禁止 axel/aria2 下载
@@ -175,13 +179,18 @@ download() {
     # fi
 
     # --user-agent=Wget/1.21.1 \
+    # --retry-wait 5
 
-    echo "$url"
-    retry 5 5 stdbuf -oL -eL aria2c -x4 \
-        --allow-overwrite=true \
-        --summary-interval=0 \
-        --max-tries 1 \
-        $save "$url"
+    # 检测大小时已经下载了种子
+    if [ "$(get_url_type "$url")" = bt ]; then
+        torrent="$(get_torrent_path_by_magnet $url)"
+        if ! [ -f "$torrent" ]; then
+            download_torrent_by_magnet "$url" "$torrent"
+        fi
+        url=$torrent
+    fi
+
+    aria2c $save "$url"
 }
 
 update_part() {
@@ -189,8 +198,9 @@ update_part() {
     sync
 
     # partprobe
+    # 有分区挂载中会报 Resource busy 错误
     if is_have_cmd partprobe; then
-        partprobe /dev/$xda 2>/dev/null
+        partprobe /dev/$xda 2>/dev/null || true
     fi
 
     # partx
@@ -413,7 +423,7 @@ EOF
 umount_all() {
     dirs="/mnt /os /iso /wim /installer /nbd /nbd-boot /nbd-efi /root /nix"
     regex=$(echo "$dirs" | sed 's, ,|,g')
-    if mounts=$(mount | grep -Ew "$regex" | awk '{print $3}' | tac); then
+    if mounts=$(mount | grep -Ew "on $regex" | awk '{print $3}' | tac); then
         for mount in $mounts; do
             echo "umount $mount"
             umount $mount
@@ -1037,6 +1047,10 @@ EOF
     done
 }
 
+newline_to_comma() {
+    tr '\n' ','
+}
+
 space_to_newline() {
     sed 's/ /\n/g'
 }
@@ -1629,6 +1643,16 @@ EOF
     show_nixos_config
 }
 
+add_fix_eth_name_systemd_service() {
+    os_dir=$1
+
+    # 无需执行 systemctl daemon-reload
+    # 因为 chroot 下执行会提示 Running in chroot, ignoring command 'daemon-reload'
+    download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
+    download "$confhome/fix-eth-name.service" "$os_dir/etc/systemd/system/fix-eth-name.service"
+    chroot "$os_dir" systemctl enable fix-eth-name
+}
+
 basic_init() {
     os_dir=$1
 
@@ -1678,13 +1702,8 @@ basic_init() {
 
     # 下载 fix-eth-name.service
     # 即使开了 net.ifnames=0 也需要
-    # 因为 alpine 和目标系统的网卡顺序可能不同
-
-    # 无需执行 systemctl daemon-reload
-    # 因为 chroot 下执行会提示 Running in chroot, ignoring command 'daemon-reload'
-    download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
-    download "$confhome/fix-eth-name.service" "$os_dir/etc/systemd/system/fix-eth-name.service"
-    chroot "$os_dir" systemctl enable fix-eth-name
+    # 因为 alpine live 和目标系统的网卡顺序可能不同
+    add_fix_eth_name_systemd_service $os_dir
 }
 
 install_arch_gentoo() {
@@ -1936,12 +1955,8 @@ EOF
     # 删除网卡名匹配
     sed -i '/^Name=/d' $os_dir/etc/systemd/network/10-cloud-init-eth*.network
 
-    # 下载 fix-eth-name.service
-    # chroot 下执行 systemctl daemon-reload
-    # 会提示 Running in chroot, ignoring command 'daemon-reload'
-    download "$confhome/fix-eth-name.sh" "$os_dir/fix-eth-name.sh"
-    download "$confhome/fix-eth-name.service" "$os_dir/etc/systemd/system/fix-eth-name.service"
-    chroot "$os_dir" systemctl enable fix-eth-name
+    # 修正网卡名
+    add_fix_eth_name_systemd_service $os_dir
 
     # arch gentoo 网络配置是用 alpine cloud-init 生成的
     # cloud-init 版本够新，因此无需修复 onlink 网关
@@ -1960,12 +1975,12 @@ EOF
 
     # cmdline + 生成 grub.cfg
     if [ -d $os_dir/etc/default/grub.d ]; then
-        file=$os_dir/etc/default/grub.d/cmdline.conf
+        file=$os_dir/etc/default/grub.d/tty.cfg
     else
         file=$os_dir/etc/default/grub
     fi
     ttys_cmdline=$(get_ttys console=)
-    echo GRUB_CMDLINE_LINUX=\"$ttys_cmdline\" >>$file
+    echo GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $ttys_cmdline\" >>$file
     chroot $os_dir grub-mkconfig -o /boot/grub/grub.cfg
 
     # fstab
@@ -1988,6 +2003,96 @@ get_http_file_size() {
     # 网址重定向可能得到多个 Content-Length, 选最后一个
     wget --spider -S "$url" 2>&1 | grep 'Content-Length:' |
         tail -1 | awk '{print $2}' | grep .
+}
+
+get_url_hash() {
+    url=$1
+
+    echo "$url" | md5sum | awk '{print $1}'
+}
+
+aria2c() {
+    if ! is_have_cmd aria2c; then
+        apk add aria2
+    fi
+
+    # stdbuf 在 coreutils 包里面
+    if ! is_have_cmd stdbuf; then
+        apk add coreutils
+    fi
+
+    # 指定 bt 种子时没有链接，因此忽略错误
+    echo "$@" | grep -o '(http|https|magnet):[^ ]*' || true
+
+    # 下载 tracker
+    # 在 sub shell 里面无法保存变量，因此写入到文件
+    if echo "$@" | grep -Eq 'magnet:|\.torrent' && ! [ -f "/tmp/trackers" ]; then
+        # 独自一行下载，不然下载失败不会报错
+        # 里面有空行
+        # txt=$(wget -O- https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_best.txt | grep .)
+        # txt=$(wget -O- https://raw.githubusercontent.com/ngosang/trackerslist/master/trackers_all.txt | grep .)
+        txt=$(wget -O- https://cf.trackerslist.com/best.txt | grep .)
+        # sed 删除最后一个逗号
+        echo "$txt" | newline_to_comma | sed 's/,$//' >/tmp/trackers
+    fi
+
+    # --dht-entry-point=router.bittorrent.com:6881 \
+    # --dht-entry-point=dht.transmissionbt.com:6881 \
+    # --dht-entry-point=router.utorrent.com:6881 \
+    retry 5 5 stdbuf -oL -eL aria2c \
+        -x4 \
+        --seed-time=0 \
+        --allow-overwrite=true \
+        --summary-interval=0 \
+        --max-tries 1 \
+        --bt-tracker="$([ -f "/tmp/trackers" ] && cat /tmp/trackers)" \
+        "$@"
+}
+
+download_torrent_by_magnet() {
+    url=$1
+    dst=$2
+
+    url_hash=$(get_url_hash "$url")
+
+    mkdir -p /tmp/bt/$url_hash
+
+    # 不支持 -o bt.torrent 指定文件名
+    aria2c "$url" \
+        --bt-metadata-only=true \
+        --bt-save-metadata=true \
+        -d /tmp/bt/$url_hash
+
+    mv /tmp/bt/$url_hash/*.torrent "$dst"
+    rm -rf /tmp/bt/$url_hash
+}
+
+get_torrent_path_by_magnet() {
+    echo "/tmp/bt/$(get_url_hash "$1").torrent"
+}
+
+get_bt_file_size() {
+    url=$1
+
+    torrent="$(get_torrent_path_by_magnet $url)"
+    download_torrent_by_magnet "$url" "$torrent" >&2
+
+    # 列出第一个文件的大小
+    # idx|path/length
+    # ===+===========================================================================
+    #   1|./zh-cn_windows_11_consumer_editions_version_24h2_updated_jan_2025_x64_dvd_7a8e5a29.iso
+    #    |6.1GiB (6,557,558,784)
+
+    aria2c --show-files=true "$torrent" |
+        grep -F -A1 '  1|./' | tail -1 | grep -o '(.*)' | sed -E 's/[(),]//g' | grep .
+}
+
+get_link_file_size() {
+    if is_magnet_link "$1" >&2; then
+        get_bt_file_size "$1"
+    else
+        get_http_file_size "$1"
+    fi
 }
 
 pipe_extract() {
@@ -2073,7 +2178,7 @@ create_part() {
     # xda*1 星号用于 nvme0n1p1 的字母 p
     # shellcheck disable=SC2154
     if [ "$distro" = windows ]; then
-        if ! size_bytes=$(get_http_file_size "$iso"); then
+        if ! size_bytes=$(get_link_file_size "$iso"); then
             # 默认值，最大的iso 23h2 假设 7g
             size_bytes=$((7 * 1024 * 1024 * 1024))
         fi
@@ -2125,6 +2230,36 @@ create_part() {
 
             mkfs.ntfs -f -F -L os /dev/$xda*1        #1 os
             mkfs.ntfs -f -F -L installer /dev/$xda*2 #2 installer
+        fi
+    elif [ "$distro" = fnos ]; then
+        # 1. 官方安装器对系统盘大小的定义包含引导分区大小
+        # 2. 官方用的是 100M 而不是 100MiB
+        if is_efi; then
+            parted /dev/$xda -s -- \
+                mklabel gpt \
+                mkpart BOOT fat32 1MiB 100M \
+                mkpart SYSTEM ext4 100M ${fnos_part_size}iB \
+                mkpart TRIM ext4 ${fnos_part_size}iB 100% \
+                set 1 esp on
+            update_part
+
+            mkfs.fat /dev/$xda*1     #1 efi
+            echo                     #2 os 用目标系统的格式化工具
+            mkfs.ext4 -F /dev/$xda*3 #3 installer
+        else
+            # bios
+            # 官方安装器不支持 bios + >2t
+            parted /dev/$xda -s -- \
+                mklabel msdos \
+                mkpart primary 1MiB 100M \
+                mkpart primary 100M ${fnos_part_size}iB \
+                mkpart primary ${fnos_part_size}iB 100% \
+                set 2 boot on
+            update_part
+
+            echo                     #1 官方安装有这个分区
+            echo                     #2 os 用目标系统的格式化工具
+            mkfs.ext4 -F /dev/$xda*3 #3 installer
         fi
     elif is_use_cloud_image; then
         installer_part_size="$(get_cloud_image_part_size)"
@@ -2280,8 +2415,23 @@ create_part() {
     fi
 }
 
+umount_pseudo_fs() {
+    os_dir=$(realpath "$1")
+
+    dirs="/proc /sys /dev /run /sys/firmware/efi/efivars"
+    regex=$(echo "$dirs" | sed 's, ,|,g')
+    if mounts=$(mount | grep -Ew "on $os_dir($regex)" | awk '{print $3}' | tac); then
+        for mount in $mounts; do
+            echo "umount $mount"
+            umount $mount
+        done
+    fi
+}
+
 mount_pseudo_fs() {
     os_dir=$1
+
+    mkdir -p $os_dir/proc/ $os_dir/sys/ $os_dir/dev/ $os_dir/run/
 
     # https://wiki.archlinux.org/title/Chroot#Using_chroot
     mount -t proc /proc $os_dir/proc/
@@ -3211,8 +3361,11 @@ modify_os_on_disk() {
                 if ls -d /os/*/ | grep -i '/windows/' 2>/dev/null; then
                     # 重新挂载为读写、忽略大小写
                     umount /os
-                    apk add ntfs-3g
-                    mount.lowntfs-3g /dev/$part /os -o ignore_case
+                    mount -t ntfs3 -o nocase /dev/$part /os
+                    # 有休眠文件时无法挂载成读写，提醒用户并退出脚本
+                    if mount | grep ' /os ' | grep -wq ro; then
+                        error_and_exit "Can't mount windows partition /dev/$part as rw."
+                    fi
                     modify_windows /os
                     return
                 fi
@@ -3611,6 +3764,120 @@ del_exist_sysconfig_NetworkManager_config() {
   - systemctl is-enabled NetworkManager && systemctl restart NetworkManager || true
 EOF
     fi
+}
+
+install_fnos() {
+    info "Install fnos"
+    os_dir=/os
+
+    # 官方安装调用流程
+    # /etc/init.d/run_install.sh > trim-install > trim-grub
+
+    # 挂载 installer iso
+    mkdir -p /installer /iso
+    mount /dev/$xda*3 /installer
+    download "$iso" /installer/fnos.iso
+    mount /installer/fnos.iso /iso
+
+    # 解压 initrd
+    apk add cpio
+    initrd_dir=/installer/initrd_dir
+    mkdir -p $initrd_dir
+    (
+        cd $initrd_dir
+        zcat /iso/install.amd/initrd.gz | cpio -idm
+    )
+    apk del cpio
+
+    # 格式化系统盘
+    mount_pseudo_fs $initrd_dir
+    chroot $initrd_dir mkfs.ext4 /dev/$xda*2
+    umount_pseudo_fs $initrd_dir
+
+    # 获取挂载参数
+    fstab_line_os=$(strings $initrd_dir/trim-install | grep -m1 '^UUID=%s / ')
+    fstab_line_efi=$(strings $initrd_dir/trim-install | grep -m1 '^UUID=%s /boot/efi ')
+    fstab_line_swapfile=$(strings $initrd_dir/trim-install | grep -m1 '^/swapfile none swap ')
+
+    # 挂载 /os
+    mkdir -p /os
+    mount /dev/$xda*2 /os
+
+    # 复制系统
+    info "Extract fnos"
+    apk add tar gzip pv
+    pv -f /iso/trimfs.tgz | tar zx -C /os --numeric-owner
+    apk del tar gzip pv
+
+    # 挂载 /os/boot/efi
+    if is_efi; then
+        mkdir -p /os/boot/efi
+        mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" /dev/$xda*1 /os/boot/efi
+    fi
+
+    # 挂载 proc sys dev
+    mount_pseudo_fs /os
+
+    # 卸载 iso installer
+    umount /iso
+    umount /installer
+
+    # 删除 installer 分区
+    apk add parted
+    parted -s /dev/$xda rm 3
+    apk del parted
+    update_part
+
+    # 更新 initrd
+    # chroot $os_dir update-initramfs -u
+
+    # 删除自带的 root 密码
+    # chroot $os_dir passwd -d root
+
+    # ssh root 登录，测试用
+    if false; then
+        echo "root:$(get_password_linux_sha512)" | chroot $os_dir chpasswd -e
+        allow_root_password_login $os_dir
+        chroot $os_dir systemctl enable ssh
+    fi
+
+    # grub
+    if is_efi; then
+        chroot $os_dir grub-install --efi-directory=/boot/efi
+        chroot $os_dir grub-install --efi-directory=/boot/efi --removable
+    else
+        chroot $os_dir grub-install /dev/$xda
+    fi
+
+    # grub tty
+    ttys_cmdline=$(get_ttys console=)
+    echo GRUB_CMDLINE_LINUX=\"\$GRUB_CMDLINE_LINUX $ttys_cmdline\" \
+        >>$os_dir/etc/default/grub.d/tty.cfg
+    chroot $os_dir update-grub
+
+    # fstab
+    {
+        # /
+        uuid=$(lsblk /dev/$xda*2 -no UUID)
+        echo "$fstab_line_os" | sed "s/%s/$uuid/"
+
+        # 官方安装器即使 swapfile 设为 0 也会有这行
+        echo "$fstab_line_swapfile" | sed "s/%s/$uuid/"
+
+        # /boot/efi
+        if is_efi; then
+            uuid=$(lsblk /dev/$xda*1 -no UUID)
+            echo "$fstab_line_efi" | sed "s/%s/$uuid/"
+        fi
+    } >$os_dir/etc/fstab
+
+    # 网卡配置
+    create_cloud_init_network_config /net.cfg
+    create_network_manager_config /net.cfg $os_dir
+    rm /net.cfg
+
+    # 修正网卡名
+    add_fix_eth_name_systemd_service $os_dir
 }
 
 install_qcow_by_copy() {
@@ -4462,7 +4729,7 @@ mount_part_for_iso_installer() {
     info "Mount part for iso installer"
 
     if [ "$distro" = windows ]; then
-        mount_args="-t ntfs3"
+        mount_args="-t ntfs3 -o nocase"
     else
         mount_args=
     fi
@@ -4733,32 +5000,53 @@ install_windows() {
         get_image_prop "$iso_install_wim" "$image_name" "$1"
     }
 
-    # PRODUCTTYPE:
-    # - WinNT    (普通 windows)
-    # - ServerNT (windows server)
+    # 多会话的信息来自注册表，因为没有官方 iso
 
-    # INSTALLATIONTYPE:
+    # Installation Type:
     # - Client      (普通 windows)
     # - Server      (windows server 带桌面体验)
     # - Server Core (windows server 不带桌面体验)
+    # - Embedded    (WES7 / Thin PC)
+    # - Client      (windows 10/11 enterprise 多会话)
+
+    # Product Type:
+    # https://cloud.tencent.com/developer/article/2465206
+    # https://learn.microsoft.com/en-us/azure/virtual-desktop/windows-multisession-faq#why-does-my-application-report-windows-enterprise-multi-session-as-a-server-operating-system
+    # - WinNT    (普通 windows)
+    # - ServerNT (windows server 带桌面体验)
+    # - ServerNT (windows server 不带桌面体验)
+    # - WinNT    (WES7 / Thin PC)
+    # - ServerNT (windows 10/11 enterprise 多会话)
+
+    # Product Suite:
+    # https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/exinit/productsuite.htm
+    # - Terminal Server  (普通 windows)
+    # - Enterprise      (windows server 带桌面体验)
+    # - Enterprise      (windows server 不带桌面体验)
+    # - Terminal Server  (WES7 / Thin PC)
+    # - ?                (windows 10/11 enterprise 多会话)
 
     # 用内核版本号筛选驱动
     # 使得可以安装 Hyper-V Server / Azure Stack HCI 等 Windows Server 变种
     nt_ver=$(get_selected_image_prop "Major Version").$(get_selected_image_prop "Minor Version")
     build_ver=$(get_selected_image_prop "Build")
-    product_type=$(get_selected_image_prop "Product Type")
+    product_suite=$(get_selected_image_prop "Product Suite")
 
-    product_ver=$(
-        case $product_type in
-        WinNT) get_client_name_by_build_ver "$build_ver" ;;
-        ServerNT) get_server_name_by_build_ver "$build_ver" ;;
-        esac
-    )
+    case "$product_suite" in
+    'Terminal Server')
+        windows_type=client
+        product_ver=$(get_client_name_by_build_ver "$build_ver")
+        ;;
+    *)
+        windows_type=server
+        product_ver=$(get_server_name_by_build_ver "$build_ver")
+        ;;
+    esac
 
     info "Selected image info"
     echo "Image Name: $image_name"
     echo "Product Version: $product_ver"
-    echo "Product Type: $product_type"
+    echo "Windows Type: $windows_type"
     echo "NT Version: $nt_ver"
     echo "Build Version: $build_ver"
     echo
@@ -5048,9 +5336,9 @@ install_windows() {
             case "$(echo "$product_ver" | to_lower)" in
             'vista') echo 2k8 ;; # 没有 vista 文件夹
             *)
-                case "$product_type" in
-                WinNT) echo "w$product_ver" ;;
-                ServerNT) echo "$product_ver" | sed -E -e 's/ //' -e 's/^200?/2k/' -e 's/r2/R2/' ;;
+                case "$windows_type" in
+                client) echo "w$product_ver" ;;
+                server) echo "$product_ver" | sed -E -e 's/ //' -e 's/^200?/2k/' -e 's/r2/R2/' ;;
                 esac
                 ;;
             esac
@@ -5135,8 +5423,6 @@ install_windows() {
                     mv -v "$file" "$new_file"
                 done
             )
-            # 虽然 vista/7 气球驱动有问题，但 msi 里面没有 vista/7 驱动
-            # 因此不用额外处理
             cp_drivers $drv/virtio
         fi
     }
@@ -5348,9 +5634,15 @@ install_windows() {
         fi
     fi
 
+    mkdir -p /wim
+
+    # 挂载 install.wim，检查是否有 sac 组件
+    wimmount "$install_wim" "$image_name" /wim/
+    [ -f /wim/Windows/System32/sacsess.exe ] && has_sac=true || has_sac=false
+    wimunmount /wim/
+
     # 挂载 boot.wim
     info "mount boot.wim"
-    mkdir -p /wim
     wimmountrw /os/boot.wim "$boot_index" /wim/
 
     cp_drivers() {
@@ -5402,8 +5694,9 @@ install_windows() {
     mv /wim/setup.exe /wim/setup.exe.disabled
 
     # 如果有重复的 Windows/System32 文件夹，会提示找不到 winload.exe 无法引导
-    # win7 win10 是 Windows/System32
-    # win2016    是 windows/system32
+    # win7 win10  boot.wim 是 Windows/System32，install.wim 是 Windows/System32
+    # win2016     boot.wim 是 windows/system32，install.wim 是 Windows/System32
+    # wimmount 无法挂载成忽略大小写
     # shellcheck disable=SC2010
     system32_dir=$(ls -d /wim/*/*32 | grep -i windows/system32)
     download $confhome/windows-setup.bat $system32_dir/startnet.cmd
@@ -5413,6 +5706,11 @@ install_windows() {
     # shellcheck disable=SC2154
     if [ "$force_old_windows_setup" = 1 ]; then
         sed -i 's/ForceOldSetup=0/ForceOldSetup=1/i' $system32_dir/startnet.cmd
+    fi
+
+    # 有 SAC 组件时，启用 EMS
+    if $has_sac; then
+        sed -i 's/EnableEMS=0/EnableEMS=1/i' $system32_dir/startnet.cmd
     fi
 
     # Windows Thin PC 有 Windows\System32\winpeshl.ini
@@ -5796,6 +6094,10 @@ trans() {
         nixos)
             create_part
             install_nixos
+            ;;
+        fnos)
+            create_part
+            install_fnos
             ;;
         *)
             create_part

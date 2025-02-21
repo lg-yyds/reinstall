@@ -48,7 +48,7 @@ usage_and_exit() {
 Usage: $reinstall_____ anolis      7|8|23
                        opencloudos 8|9|23
                        rocky       8|9
-                       redhat      8|9 --img='http://xxx.com/xxx.qcow2'
+                       redhat      8|9 --img="http://xxx.com/xxx.qcow2"
                        oracle      8|9
                        almalinux   8|9
                        centos      9|10
@@ -62,9 +62,10 @@ Usage: $reinstall_____ anolis      7|8|23
                        kali
                        arch
                        gentoo
-                       dd          --img='http://xxx.com/yyy.zzz' (raw image stores in raw/vhd/tar/gz/xz/zst)
-                       windows     --image-name='windows xxx yyy' --lang=xx-yy
-                       windows     --image-name='windows xxx yyy' --iso='http://xxx.com/xxx.iso'
+                       fnos
+                       dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
+                       windows     --image-name="windows xxx yyy" --lang=xx-yy
+                       windows     --image-name="windows xxx yyy" --iso="http://xxx.com/xxx.iso"
                        netboot.xyz
 
        Options:        [--ssh-port PORT]
@@ -128,8 +129,8 @@ is_in_china() {
     [ "$force_cn" = 1 ] && return 0
 
     if [ -z "$_loc" ]; then
-        # 部分地区 www.cloudflare.com 被墙
-        _loc=$(curl -L http://dash.cloudflare.com/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
+        # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
+        _loc=$(curl -L http://www.visa.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
         if [ -z "$_loc" ]; then
             error_and_exit "Can not get location."
         fi
@@ -1358,49 +1359,54 @@ Continue?
         # 注意 windows server 2008 r2 serverdatacenter 不用改
         image_name=${image_name/windows server 2008 server/windows longhorn server}
 
-        iso_filetype='iso raw'
-        iso_tested=false
+        if [[ "$iso" = magnet:* ]]; then
+            : # 不测试磁力链接
+        else
+            iso_filetype='iso raw'
+            iso_tested=false
 
-        # 获取 massgrave.dev 直链
-        if grep -Eiq '\.massgrave\.dev/.*\.(iso|img)' <<<"$iso"; then
-            # 如果已经是 iso 直链则跳过下面的 iso 测试
-            if test_url_grace "$iso" "$iso_filetype"; then
-                iso_tested=true
+            # 获取 massgrave.dev 直链
+            if grep -Eiq '\.massgrave\.dev/.*\.(iso|img)' <<<"$iso"; then
+                # 如果已经是 iso 直链则跳过下面的 iso 测试
+                if test_url_grace "$iso" "$iso_filetype"; then
+                    iso_tested=true
+                else
+                    msg="Could not find direct link for $iso"
+                    if ! iso=$(grep -oE 'https?.*\.iso[^"]*' $tmp/img-test | sed 's/&amp;/\&/g' | grep .); then
+                        error_and_exit "$msg"
+                    fi
+                fi
+            fi
+
+            # 测试是否是 iso
+            if ! $iso_tested; then
+                test_url "$iso" "$iso_filetype"
+            fi
+
+            # 判断 iso 架构是否兼容
+            # https://gitlab.com/libosinfo/osinfo-db/-/tree/main/data/os/microsoft.com?ref_type=heads
+            # uupdump linux 下合成的标签是 ARM64，windows下合成的标签是 A64
+            if file -b "$tmp/img-test" | grep -Eq '_(A64|ARM64)'; then
+                iso_arch=arm64
             else
-                msg="Could not find direct link for $iso"
-                if ! iso=$(grep -oE 'https?.*\.iso[^"]*' $tmp/img-test | sed 's/&amp;/\&/g' | grep .); then
-                    error_and_exit "$msg"
+                iso_arch=x86_or_x64
+            fi
+
+            if ! {
+                { [ "$basearch" = x86_64 ] && [ "$iso_arch" = x86_or_x64 ]; } ||
+                    { [ "$basearch" = aarch64 ] && [ "$iso_arch" = arm64 ]; }
+            }; then
+                warn "
+The current machine is $basearch, but it seems the ISO is for $iso_arch. Continue?
+当前机器是 $basearch，但 ISO 似乎是 $iso_arch。继续安装?"
+                read -r -p '[y/N]: '
+                if ! [[ "$REPLY" = [Yy] ]]; then
+                    exit
                 fi
             fi
         fi
 
-        # 测试是否是 iso
-        if ! $iso_tested; then
-            test_url "$iso" "$iso_filetype"
-        fi
-
         [ -n "$boot_wim" ] && test_url "$boot_wim" 'wim'
-
-        # 判断 iso 架构是否兼容
-        # https://gitlab.com/libosinfo/osinfo-db/-/tree/main/data/os/microsoft.com?ref_type=heads
-        if file -b "$tmp/img-test" | grep -q '_A64'; then
-            iso_arch=arm64
-        else
-            iso_arch=x86_or_x64
-        fi
-
-        if ! {
-            { [ "$basearch" = x86_64 ] && [ "$iso_arch" = x86_or_x64 ]; } ||
-                { [ "$basearch" = aarch64 ] && [ "$iso_arch" = arm64 ]; }
-        }; then
-            warn "
-The current machine is $basearch, but it seems the ISO is for $iso_arch. Continue?
-当前机器是 $basearch，但 ISO 似乎是 $iso_arch。继续安装?"
-            read -r -p '[y/N]: '
-            if ! [[ "$REPLY" = [Yy] ]]; then
-                exit
-            fi
-        fi
 
         eval "${step}_iso='$iso'"
         eval "${step}_boot_wim='$boot_wim'"
@@ -1447,6 +1453,30 @@ Continue with DD?
         eval "${step}_img='$img'"
         eval "${step}_img_type='$img_type'"
         eval "${step}_img_type_warp='$img_type_warp'"
+    }
+
+    setos_fnos() {
+        if [ "$basearch" = aarch64 ]; then
+            error_and_exit "FNOS not supports ARM."
+        fi
+
+        # 系统盘大小
+        min=8
+        default=8
+        while true; do
+            IFS= read -r -p "Type System Partition Size in GB. Minimal $min GB. [$default]: " input
+            input=${input:-$default}
+            if ! { is_digit "$input" && [ "$input" -ge "$min" ]; }; then
+                error "Invalid Size. Please Try again."
+            else
+                eval "${step}_fnos_part_size=${input}G"
+                break
+            fi
+        done
+
+        iso=$(curl -L https://fnnas.com | grep -o 'https://[^"]*\.iso' | head -1)
+        test_url "$iso" 'iso'
+        eval "${step}_iso='$iso'"
     }
 
     setos_centos_almalinux_rocky_fedora() {
@@ -1689,6 +1719,7 @@ verify_os_name() {
         'kali' \
         'arch' \
         'gentoo' \
+        'fnos' \
         'windows' \
         'dd' \
         'netboot.xyz'; do
@@ -1947,7 +1978,7 @@ check_ram() {
         alpine | debian | kali | dd) echo 256 ;;
         arch | gentoo | nixos | windows) echo 512 ;;
         redhat | centos | almalinux | rocky | fedora | oracle | ubuntu | anolis | opencloudos | openeuler) echo 1024 ;;
-        opensuse) echo -1 ;; # 没有安装模式
+        opensuse | fnos) echo -1 ;; # 没有安装模式
         esac
     )
 
@@ -3696,15 +3727,14 @@ fi
 
 # 密码
 if ! is_netboot_xyz && [ -z "$password" ]; then
-    if is_use_dd; then
+    if is_use_dd || [ "$distro" = fnos ]; then
         echo "
-This password is only used for SSH access to view logs during the DD process.
+This password is only used for SSH access to view logs during the installation.
 Password of the image will NOT modify.
 
-密码仅用于 DD 过程中通过 SSH 查看日志。
+密码仅用于安装过程中通过 SSH 查看日志。
 镜像的密码不会被修改。
 "
-
     fi
     prompt_password
 fi
@@ -4135,7 +4165,7 @@ fi
 info 'info'
 echo "$distro $releasever"
 
-if ! { is_netboot_xyz || is_use_dd; }; then
+if ! { is_netboot_xyz || is_use_dd || [ "$distro" = fnos ]; }; then
     if [ "$distro" = windows ]; then
         username="administrator"
     else
@@ -4151,6 +4181,9 @@ elif is_alpine_live; then
     echo 'Reboot to start Alpine Live OS.'
 elif is_use_dd; then
     echo 'Reboot to start DD.'
+elif [ "$distro" = fnos ]; then
+    echo "Reboot to start the installation."
+    echo "After install, you need to config the system on http://SERVER_IP:5666 as soon as possible."
 else
     echo "Reboot to start the installation."
 fi
