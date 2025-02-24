@@ -62,6 +62,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        kali
                        arch
                        gentoo
+                       aosc
                        fnos
                        dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                        windows     --image-name="windows xxx yyy" --lang=xx-yy
@@ -125,11 +126,24 @@ curl() {
     done
 }
 
+mask2cidr() {
+    local x=${1##*255.}
+    set -- 0^^^128^192^224^240^248^252^254^ $(((${#1} - ${#x}) * 2)) ${x%%.*}
+    x=${1%%"$3"*}
+    echo $(($2 + (${#x} / 4)))
+}
+
 is_in_china() {
     [ "$force_cn" = 1 ] && return 0
 
     if [ -z "$_loc" ]; then
         # www.cloudflare.com/dash.cloudflare.com 国内访问的是美国服务器，而且部分地区被墙
+        # 备用 www.bose.cn
+        # 备用 www.qualcomm.cn
+        # 备用 www.prologis.cn
+        # 备用 www.garmin.com.cn
+        # 备用 www.autodesk.com.cn
+        # 备用 www.keysight.com.cn
         _loc=$(curl -L http://www.visa.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
         if [ -z "$_loc" ]; then
             error_and_exit "Can not get location."
@@ -1474,9 +1488,25 @@ Continue with DD?
             fi
         done
 
-        iso=$(curl -L https://fnnas.com | grep -o 'https://[^"]*\.iso' | head -1)
+        iso=$(curl -L https://fnnas.com/ | grep -o 'https://[^"]*\.iso' | head -1)
         test_url "$iso" 'iso'
         eval "${step}_iso='$iso'"
+    }
+
+    setos_aosc() {
+        if is_in_china; then
+            mirror=https://mirror.nju.edu.cn/anthon/aosc-os
+        else
+            # 服务器在香港
+            mirror=https://releases.aosc.io
+        fi
+
+        dir=os-$basearch_alt/base
+        file=$(curl -L $mirror/$dir/ | grep -oP 'aosc-os_base_.*?\.tar.xz' |
+            sort -uV | tail -1 | grep .)
+        img=$mirror/$dir/$file
+        test_url $img 'tar.xz'
+        eval ${step}_img=$img
     }
 
     setos_centos_almalinux_rocky_fedora() {
@@ -1719,6 +1749,7 @@ verify_os_name() {
         'kali' \
         'arch' \
         'gentoo' \
+        'aosc' \
         'fnos' \
         'windows' \
         'dd' \
@@ -1976,7 +2007,7 @@ check_ram() {
         case "$distro" in
         netboot.xyz) echo 0 ;;
         alpine | debian | kali | dd) echo 256 ;;
-        arch | gentoo | nixos | windows) echo 512 ;;
+        arch | gentoo | aosc | nixos | windows) echo 512 ;;
         redhat | centos | almalinux | rocky | fedora | oracle | ubuntu | anolis | opencloudos | openeuler) echo 1024 ;;
         opensuse | fnos) echo -1 ;; # 没有安装模式
         esac
@@ -2362,7 +2393,9 @@ collect_netconf() {
                         ip=${ips[i]}
                         subnet=${subnets[i]}
                         if [[ "$ip" = *.* ]]; then
-                            cidr=$(ipcalc -b "$ip/$subnet" | grep Netmask: | awk '{print $NF}')
+                            # ipcalc 依赖 perl，会使 cygwin 增加 ~50M
+                            # cidr=$(ipcalc -b "$ip/$subnet" | grep Netmask: | awk '{print $NF}')
+                            cidr=$(mask2cidr "$subnet")
                             ipv4_addr="$ip/$cidr"
                             ipv4_gateway="$gateway"
                             ipv4_mac="$mac_addr"
@@ -3749,7 +3782,7 @@ mkdir_clear "$tmp"
 # 强制忽略/强制添加 --ci 参数
 # debian 不强制忽略 ci 留作测试
 case "$distro" in
-dd | windows | netboot.xyz | kali | alpine | arch | gentoo | nixos)
+dd | windows | netboot.xyz | kali | alpine | arch | gentoo | aosc | nixos | fnos)
     if is_use_cloud_image; then
         echo "ignored --ci"
         unset cloud_image
