@@ -69,7 +69,9 @@ Usage: $reinstall_____ anolis      7|8|23
                        windows     --image-name="windows xxx yyy" --iso="http://xxx.com/xxx.iso"
                        netboot.xyz
 
-       Options:        [--ssh-port PORT]
+       Options:        [--password PASSWORD]
+                       [--ssh-key  KEY]
+                       [--ssh-port PORT]
                        [--rdp-port PORT]
                        [--web-port PORT]
                        [--allow-ping]
@@ -114,6 +116,8 @@ error_and_exit() {
 }
 
 curl() {
+    is_have_cmd curl || install_pkg curl
+
     # 添加 -f, --fail，不然 404 退出码也为0
     # 32位 cygwin 已停止更新，证书可能有问题，先添加 --insecure
     # centos 7 curl 不支持 --retry-connrefused --retry-all-errors
@@ -151,10 +155,10 @@ is_in_china() {
         # 备用 www.garmin.com.cn
         # 备用 www.autodesk.com.cn
         # 备用 www.keysight.com.cn
-        _loc=$(curl -L http://www.visa.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2)
-        if [ -z "$_loc" ]; then
+        if ! _loc=$(curl -L http://www.visa.cn/cdn-cgi/trace | grep '^loc=' | cut -d= -f2 | grep .); then
             error_and_exit "Can not get location."
         fi
+        echo "Location: $_loc" >&2
     fi
     [ "$_loc" = CN ]
 }
@@ -339,7 +343,7 @@ test_url_real() {
         real_type=$(file_enhanced $tmp_file)
         echo "File type: $real_type"
 
-        # debian 9 ubuntu 16.04 可能会将 iso 识别成 raw
+        # debian 9 ubuntu 16.04-20.04 可能会将 iso 识别成 raw
         for type in $expect_types $([ "$expect_types" = iso ] && echo raw); do
             if [[ ."$real_type" = *."$type" ]]; then
                 # 如果要设置变量
@@ -1212,17 +1216,11 @@ Continue?
                 ci_mirror=https://cloud-images.ubuntu.com
             fi
 
-            # 22.04 和以下没有 minimal aarch64 镜像
+            # 以下版本有 minimal 镜像
+            # amd64 所有
+            # arm64 24.04 和以上
             is_have_minimal_image() {
-                [ "$basearch_alt" = amd64 ] || [ "$releasever" = 24.04 ]
-            }
-
-            is_should_use_minimal_cloud_image() {
-                if [ "$minimal" = 1 ] && ! is_have_minimal_image; then
-                    echo "Fallback to normal cloud image."
-                    return 1
-                fi
-                [ "$minimal" = 1 ]
+                [ "$basearch_alt" = amd64 ] || [ "${releasever%.*}" -ge 24 ]
             }
 
             get_suffix() {
@@ -1235,7 +1233,10 @@ Continue?
                 fi
             }
 
-            if is_should_use_minimal_cloud_image; then
+            if [ "$minimal" = 1 ]; then
+                if ! is_have_minimal_image; then
+                    error_and_exit "Minimal cloud image is not available for $releasever $basearch_alt."
+                fi
                 eval ${step}_img="$ci_mirror/minimal/releases/$codename/release/ubuntu-$releasever-minimal-cloudimg-$basearch_alt$(get_suffix).img"
             else
                 eval ${step}_img="$ci_mirror/releases/$releasever/release/ubuntu-$releasever-server-cloudimg-$basearch_alt$(get_suffix).img"
@@ -1789,6 +1790,10 @@ verify_os_args() {
     dd) [ -n "$img" ] || error_and_exit "dd need --img" ;;
     redhat) [ -n "$img" ] || error_and_exit "redhat need --img" ;;
     windows) [ -n "$image_name" ] || error_and_exit "Install Windows need --image-name." ;;
+    esac
+
+    case "$distro" in
+    netboot.xyz | windows) [ -z "$ssh_keys" ] || error_and_exit "not support ssh key for $distro" ;;
     esac
 }
 
@@ -3471,7 +3476,11 @@ This script is outdated, please download reinstall.sh again.
 
     # 保存配置
     mkdir -p $initrd_dir/configs
-    save_password $initrd_dir/configs
+    if [ -n "$ssh_keys" ]; then
+        cat <<<"$ssh_keys" >$initrd_dir/configs/ssh_keys
+    else
+        save_password $initrd_dir/configs
+    fi
 
     if is_distro_like_debian $nextos_distro; then
         mod_initrd_debian_kali
@@ -3572,6 +3581,15 @@ remove_useless_initrd_files() {
     du -sh .
 }
 
+get_unix_path() {
+    if is_in_windows; then
+        # 输入的路径是 / 开头也没问题
+        cygpath -u "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
 # 脚本入口
 if mount | grep -q 'tmpfs on / type tmpfs'; then
     error_and_exit "Can't run this script in Live OS."
@@ -3610,7 +3628,7 @@ else
 fi
 
 long_opts=
-for o in ci installer debug minimal allow-ping force-cn \
+for o in ci installer debug minimal allow-ping force-cn help \
     add-driver: \
     hold: sleep: \
     iso: \
@@ -3620,6 +3638,7 @@ for o in ci installer debug minimal allow-ping force-cn \
     lang: \
     passwd: password: \
     ssh-port: \
+    ssh-key: public-key: \
     rdp-port: \
     web-port: http-port: \
     allow-ping: \
@@ -3631,7 +3650,7 @@ for o in ci installer debug minimal allow-ping force-cn \
 done
 
 # 整理参数
-if ! opts=$(getopt -n $0 -o "" --long "$long_opts" -- "$@"); then
+if ! opts=$(getopt -n $0 -o "h" --long "$long_opts" -- "$@"); then
     exit
 fi
 
@@ -3639,6 +3658,9 @@ eval set -- "$opts"
 # shellcheck disable=SC2034
 while true; do
     case "$1" in
+    -h | --help)
+        usage_and_exit
+        ;;
     --commit)
         commit=$2
         shift 2
@@ -3689,6 +3711,73 @@ while true; do
         password=$2
         shift 2
         ;;
+    --ssh-key | --public-key)
+        ssh_key_error_and_exit() {
+            error "$1"
+            cat <<EOF
+Available options:
+  --ssh-key "ssh-rsa ..."
+  --ssh-key "ssh-ed25519 ..."
+  --ssh-key "ecdsa-sha2-nistp256/384/521 ..."
+  --ssh-key github:your_username
+  --ssh-key gitlab:your_username
+  --ssh-key http://url
+  --ssh-key https://url
+  --ssh-key /path/to/public_key
+EOF
+            exit 1
+        }
+
+        # https://manpages.debian.org/testing/openssh-server/authorized_keys.5.en.html#AUTHORIZED_KEYS_FILE_FORMAT
+        is_valid_ssh_key() {
+            grep -qE '^(ecdsa-sha-nistp(256|384|512)|ssh-(ed25519|rsa)) ' <<<"$1"
+        }
+
+        [ -n "$2" ] || ssh_key_error_and_exit "Need value for $1"
+
+        case "$(to_lower <<<"$2")" in
+        github:* | gitlab:* | http://* | https://*)
+            if [[ "$(to_lower <<<"$2")" = http* ]]; then
+                key_url=$2
+            else
+                IFS=: read -r site user <<<"$2"
+                [ -n "$user" ] || ssh_key_error_and_exit "Need a username for $site"
+                key_url="https://$site.com/$user.keys"
+            fi
+            if ! ssh_key=$(curl -L "$key_url"); then
+                error_and_exit "Can't get ssh key from $key_url"
+            fi
+            ;;
+        *)
+            # 检测值是否为 ssh key
+            if is_valid_ssh_key "$2"; then
+                ssh_key=$2
+            else
+                # 视为路径
+                # windows 路径转换
+                if ! { ssh_key_file=$(get_unix_path "$2") && [ -f "$ssh_key_file" ]; }; then
+                    ssh_key_error_and_exit "SSH Key/File/Url \"$2\" is invalid."
+                fi
+                ssh_key=$(<"$ssh_key_file")
+            fi
+            ;;
+        esac
+
+        # 检查 key 格式
+        if ! is_valid_ssh_key "$ssh_key"; then
+            ssh_key_error_and_exit "SSH Key/File/Url \"$2\" is invalid."
+        fi
+
+        # 保存 key
+        # 不用处理注释，可以支持写入 authorized_keys
+        # 安装 nixos 时再处理注释/空行，转成数组，再添加到 nix 配置文件中
+        if [ -n "$ssh_keys" ]; then
+            ssh_keys+=$'\n'
+        fi
+        ssh_keys+=$ssh_key
+
+        shift 2
+        ;;
     --ssh-port)
         is_port_valid $2 || error_and_exit "Invalid $1 value: $2"
         ssh_port=$2
@@ -3705,13 +3794,10 @@ while true; do
         shift 2
         ;;
     --add-driver)
-        # 路径转换
-        if is_in_windows; then
-            # 输入的路径是 / 开头也没问题
-            inf_or_dir="$(cygpath -u "$2")"
-        else
-            inf_or_dir=$2
-        fi
+        [ -n "$2" ] || error_and_exit "Need value for $1"
+
+        # windows 路径转换
+        inf_or_dir=$(get_unix_path "$2")
 
         # alpine busybox 不支持 readlink -m
         # readlink -m /asfsafasfsaf/fasf
@@ -3719,7 +3805,7 @@ while true; do
 
         if ! [ -d "$inf_or_dir" ] &&
             ! { [ -f "$inf_or_dir" ] && [[ "$inf_or_dir" =~ \.[iI][nN][fF]$ ]]; }; then
-            error_and_exit "Not a inf or dir: $2"
+            ssh_key_error_and_exit "Not a inf or dir: $2"
         fi
 
         # 转为绝对路径
@@ -3795,7 +3881,7 @@ if is_secure_boot_enabled; then
 fi
 
 # 密码
-if ! is_netboot_xyz && [ -z "$password" ]; then
+if ! is_netboot_xyz && [ -z "$ssh_keys" ] && [ -z "$password" ]; then
     if is_use_dd; then
         echo "
 This password is only used for SSH access to view logs during the installation.
@@ -4234,14 +4320,19 @@ fi
 info 'info'
 echo "$distro $releasever"
 
-if ! { is_netboot_xyz || is_use_dd || [ "$distro" = fnos ]; }; then
-    if [ "$distro" = windows ]; then
-        username="administrator"
-    else
-        username="root"
-    fi
+case "$distro" in
+windows) username=administrator ;;
+dd | netboot.xyz) username= ;;
+*) username=root ;;
+esac
+
+if [ -n "$username" ]; then
     echo "Username: $username"
-    echo "Password: $password"
+    if [ -n "$ssh_keys" ]; then
+        echo "Public Key: $ssh_keys"
+    else
+        echo "Password: $password"
+    fi
 fi
 
 if is_netboot_xyz; then
