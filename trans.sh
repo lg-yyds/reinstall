@@ -46,6 +46,8 @@ warn() {
 
 error_and_exit() {
     error "$@"
+    echo "Run '/trans.sh' to retry." >&2
+    echo "Run '/trans.sh alpine' to install Alpine Linux instead." >&2
     exit 1
 }
 
@@ -53,10 +55,12 @@ trap_err() {
     line_no=$1
     ret_no=$2
 
-    error "Line $line_no return $ret_no"
-    if [ -f "/trans.sh" ]; then
-        sed -n "$line_no"p /trans.sh
-    fi
+    error_and_exit "$(
+        echo "Line $line_no return $ret_no"
+        if [ -f "/trans.sh" ]; then
+            sed -n "$line_no"p /trans.sh
+        fi
+    )"
 }
 
 is_run_from_locald() {
@@ -3884,15 +3888,17 @@ chroot_apt_remove() {
 
     # 不能用 apt remove --purge -y xxx yyy
     # 因为如果索引里没有其中一个，会报错，另一个也不会删除
-    # 因此需要分开删除
-    for package in "$@"; do
+    local pkgs=
+    for pkg in "$@"; do
         # apt list 会提示 WARNING: apt does not have a stable CLI interface. Use with caution in scripts.
         # 但又不能用 apt-get list
-        if chroot $os_dir apt list --installed "$package" | grep -q installed; then
-            # 删除 resolvconf 时会弹出建议重启，因此添加 noninteractive
-            DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get remove --purge -y "$package"
+        if chroot $os_dir apt list --installed "$pkg" | grep -q installed; then
+            pkgs="$pkgs $pkg"
         fi
     done
+
+    # 删除 resolvconf 时会弹出建议重启，因此添加 noninteractive
+    DEBIAN_FRONTEND=noninteractive chroot $os_dir apt-get remove --purge --allow-remove-essential -y $pkgs
 }
 
 chroot_apt_autoremove() {
@@ -4237,8 +4243,12 @@ EOF
         fi
 
         # 主 grub.cfg
-        # --update-bls-cmdline
-        chroot /os/ grub2-mkconfig -o "$grub_o_cfg"
+        if ls /os/boot/loader/entries/*.conf >/dev/null 2>&1 &&
+            chroot /os/ grub2-mkconfig --help | grep -q update-bls-cmdline; then
+            chroot /os/ grub2-mkconfig -o "$grub_o_cfg" --update-bls-cmdline
+        else
+            chroot /os/ grub2-mkconfig -o "$grub_o_cfg"
+        fi
 
         # 网络配置
         # el7/8 sysconfig
@@ -4360,6 +4370,24 @@ configfile \$prefix/grub.cfg
 EOF
         fi
 
+        # 避免 do-release-upgrade 时自动执行 dpkg-reconfigure grub-xx 但是 efi/biosgrub 分区不存在而导致报错
+        # shellcheck disable=SC2046
+        chroot_apt_remove $os_dir $(is_efi && echo 'grub-pc' || echo 'grub-efi*' 'shim*')
+        chroot_apt_autoremove $os_dir
+
+        # 安装 mbr
+        if ! is_efi; then
+            if false; then
+                # debconf-show grub-pc
+                # 每次开机硬盘名字可能不一样，但是 debian netboot 安装后也是设置了 grub-pc/install_devices
+                echo grub-pc grub-pc/install_devices multiselect /dev/$xda | chroot $os_dir debconf-set-selections # 22.04
+                echo grub-pc grub-pc/cloud_style_installation boolean true | chroot $os_dir debconf-set-selections # 24.04
+                chroot $os_dir dpkg-reconfigure -f noninteractive grub-pc
+            else
+                chroot $os_dir grub-install /dev/$xda
+            fi
+        fi
+
         # 自带内核：
         # 常规版本             generic
         # minimal 20.04/22.04 kvm      # 后台 vnc 无显示
@@ -4440,11 +4468,6 @@ EOF
             if [ -z "$(cat $file)" ]; then
                 rm -f $file
             fi
-        fi
-
-        # 安装 bios 引导
-        if ! is_efi; then
-            chroot $os_dir grub-install /dev/$xda
         fi
 
         # 更改 efi 目录的 grub.cfg 写死的 fsuuid
