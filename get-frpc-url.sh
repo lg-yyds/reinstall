@@ -1,6 +1,6 @@
 #!/bin/ash
 # shellcheck shell=dash
-# alpine/debian 共用此脚本
+# trans.sh/debian.cfg 共用此脚本
 
 # debian 9 不支持 set -E
 set -e

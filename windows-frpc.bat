@@ -17,12 +17,17 @@ schtasks /Create /TN "frpc" /XML "%SystemDrive%\frpc\frpc.xml"
 schtasks /Run /TN "frpc"
 del "%SystemDrive%\frpc\frpc.xml"
 
-rem win11 在首次登录后计划任务才有效
+rem win11 在首次登录后计划任务才生效
 rem 即使手动重启，计划任务也没有运行
-rem 因此如果连续 10 秒都没找到 frpc 进程，则运行 frpc-workaround.bat
+
+rem 如果 10 秒内有 frpc 进程，则代表计划任务已经生效，不需要首次登录
+rem 如果 10 秒后也没有 frpc 进程，则需要运行 frpc-workaround.bat
 for /L %%i in (1,1,10) do (
     timeout 1
-    tasklist /FI "IMAGENAME eq frpc.exe" | find /I "frpc.exe" && goto :end
+    tasklist /FI "IMAGENAME eq frpc.exe" | find /I "frpc.exe" && (
+        del "%SystemDrive%\frpc\frpc-workaround.bat"
+        goto :end
+    )
 )
 
 rem 后台运行 frpc-workaround.bat
