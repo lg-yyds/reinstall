@@ -2328,6 +2328,10 @@ get_disk_logic_sector_size() {
     blockdev --getss "$1"
 }
 
+is_4kn() {
+    [ "$(blockdev --getss "$1")" = 4096 ]
+}
+
 is_xda_gt_2t() {
     disk_size=$(get_disk_size /dev/$xda)
     disk_2t=$((2 * 1024 * 1024 * 1024 * 1024))
@@ -5351,13 +5355,29 @@ hivexget() {
     ash "$(which hivexget)" "$@"
 }
 
-get_installation_type_from_windows_drive() {
+get_windows_type_from_windows_drive() {
     local os_dir=$1
 
     apk add hivex
-    hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SOFTWARE)
-    hivexget $hive '\Microsoft\Windows NT\CurrentVersion' InstallationType
+    software_hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SOFTWARE)
+    system_hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SYSTEM)
+    installation_type=$(hivexget $software_hive '\Microsoft\Windows NT\CurrentVersion' InstallationType || true)
+    product_type=$(hivexget $system_hive '\ControlSet001\Control\ProductOptions' ProductType || true)
     apk del hivex
+
+    # 根据 win11 multi-session 的情况
+    # InstallationType 比 ProductType 准确
+
+    # Vista wim 和注册表都没有 InstallationType
+    case "$installation_type" in
+    Client | Embedded) echo client ;;
+    Server | 'Server Core') echo server ;;
+    *) case "$product_type" in
+        WinNT) echo client ;;
+        ServerNT) echo server ;;
+        *) error_and_exit "Unknown Windows Type" ;;
+        esac ;;
+    esac
 }
 
 get_windows_arch_from_windows_drive() {
@@ -5506,7 +5526,7 @@ install_windows() {
     # 用内核版本号筛选驱动
     # 使得可以安装 Hyper-V Server / Azure Stack HCI 等 Windows Server 变种
     # 7601.24214.180801-1700.win7sp1_ldr_escrow_CLIENT_ULTIMATE_x64FRE_en-us.iso wim 没有 Installation Type
-    # 因此改成从注册表获取
+    # Vista wim 和 注册表 都没有 InstallationType
     if false; then
         nt_ver=$(get_selected_image_prop "Major Version").$(get_selected_image_prop "Minor Version")
         build_ver=$(get_selected_image_prop "Build")
@@ -5521,7 +5541,7 @@ install_windows() {
     wimmount "$iso_install_wim" "$image_index" /wim/
     ntoskrnl_exe=$(find_file_ignore_case /wim/Windows/System32/ntoskrnl.exe)
     get_windows_version_from_dll "$ntoskrnl_exe"
-    installation_type=$(get_installation_type_from_windows_drive /wim)
+    windows_type=$(get_windows_type_from_windows_drive /wim)
     {
         find_file_ignore_case /wim/Windows/System32/sacsess.exe && has_sac=true || has_sac=false
         find_file_ignore_case /wim/Windows/INF/stornvme.inf && has_stornvme=true || has_stornvme=false
@@ -5540,17 +5560,12 @@ install_windows() {
         support_sha256=true
     fi
 
-    case "$installation_type" in
-    Client | Embedded)
-        windows_type=client
-        product_ver=$(get_client_name_by_build_ver "$build_ver")
-        ;;
-    Server | 'Server Core')
-        windows_type=server
-        product_ver=$(get_server_name_by_build_ver "$build_ver")
-        ;;
-    *) error_and_exit "Unknown Installation Type: $installation_type" ;;
-    esac
+    product_ver=$(
+        case "$windows_type" in
+        client) get_client_name_by_build_ver "$build_ver" ;;
+        server) get_server_name_by_build_ver "$build_ver" ;;
+        esac
+    )
 
     info "Selected image info"
     echo "Image Name: $image_name"
@@ -5921,15 +5936,39 @@ EOF
 
         apk add msitools
 
+        # 8.4.3 的 xenbus 挑创建实例时的初始系统
+        # 初始系统为 windows 的实例支持 8.4.3
+        # 初始系统为 linux 的实例不支持 8.4.3
+
+        # 初始系统为 linux + 安装 8.4.3
+        # 如果用 msi 安装，则不会启用 xenbus，结果是能启动但无法上网
+        # 如果通过 inf 安装，则会启用 xenbus，结果是无法启动
+
+        apk add lscpu
+        hypervisor_vendor=$(lscpu | grep 'Hypervisor vendor:' | awk '{print $3}')
+        apk del lscpu
+
         aws_pv_ver=$(
             case "$nt_ver" in
             6.1) $support_sha256 && echo 8.3.5 || echo 8.3.2 ;;
-            6.2 | 6.3) echo 8.4.3 ;;
+            6.2 | 6.3)
+                case "$hypervisor_vendor" in
+                Microsoft) echo 8.4.3 ;; # 实例初始系统为 Windows，能使用 8.4.3
+                Xen) echo 8.3.5 ;;       # 实例初始系统为 Linux，不能使用 8.4.3
+                esac
+                ;;
             *) echo Latest ;;
             esac
         )
 
-        download "$(get_aws_repo)/AWSPV/$aws_pv_ver/AWSPVDriver.zip" $drv/AWSPVDriver.zip
+        url=$(
+            case "$aws_pv_ver" in
+            8.3.2) echo https://web.archive.org/web/20221016194548/https://s3.amazonaws.com/ec2-windows-drivers-downloads/AWSPV/$aws_pv_ver/AWSPVDriver.zip ;; # win7 sha1
+            *) echo "$(get_aws_repo)/AWSPV/$aws_pv_ver/AWSPVDriver.zip" ;;
+            esac
+        )
+
+        download "$url" $drv/AWSPVDriver.zip
 
         unzip -o -d $drv $drv/AWSPVDriver.zip
         mkdir -p $drv/xen/
@@ -6490,6 +6529,12 @@ EOF
     # 有 SAC 组件时，启用 EMS
     if $has_sac; then
         sed -i 's/EnableEMS=0/EnableEMS=1/i' $startnet_cmd
+    fi
+
+    # 4kn EFI 分区最少要 260M
+    # https://learn.microsoft.com/windows-hardware/manufacture/desktop/hard-drives-and-partitions
+    if is_4kn /dev/$xda; then
+        sed -i 's/is4kn=0/is4kn=1/i' $startnet_cmd
     fi
 
     # Windows Thin PC 有 Windows\System32\winpeshl.ini
