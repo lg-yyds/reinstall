@@ -6069,8 +6069,6 @@ EOF
         # 可改成直接从 github commit 下载 win7 173(sha1) 176(sha256) 全家桶？
         # 国内可使用 jsdelivr 加速 github
 
-        # 2008 安装的气球驱动不能用，需要到硬件管理器重新安装设备才能用，无需更新驱动
-
         # 2k12
         # https://github.com/virtio-win/virtio-win-pkg-scripts/issues/61
         # 217 ~ 271    2k12 证书有问题，红帽的 virtio-win-1.9.45 没问题
@@ -6118,8 +6116,13 @@ EOF
             mkdir -p $drv/virtio
             mount -o ro $drv/virtio.iso $drv/virtio
 
-            # -not -ipath "*/balloon/*"
-            cp_drivers $drv/virtio -ipath "*/$virtio_sys/$arch/*" "$@"
+            # vista 如果安装气动驱动，会报错 windows could not configure one or more system components
+            # 2008 安装的气球驱动不能用，需要到硬件管理器重新安装设备才能用，无需更新驱动
+            if [ "$product_ver" = vista ]; then
+                cp_drivers $drv/virtio -ipath "*/$virtio_sys/$arch/*" "$@" -not -ipath "*/balloon/*"
+            else
+                cp_drivers $drv/virtio -ipath "*/$virtio_sys/$arch/*" "$@"
+            fi
         else
             # coreutils 的 cp mv rm 才有 -v 参数
             apk add 7zip file coreutils
@@ -6449,14 +6452,14 @@ EOF
 
     # key
     if [ "$product_ver" = vista ]; then
-        # vista 需密钥，密钥可与 edition 不一致
-        # TODO: 改成从网页获取？
+        # vista 无人值守安装需要密钥，密钥可与 edition 不一致
         # https://learn.microsoft.com/en-us/windows-server/get-started/kms-client-activation-keys
-        key=VKK3X-68KWM-X2YGT-QR4M6-4BWMV
+        # 从镜像获取默认密钥
+        setup_cfg=$(get_path_in_correct_case /os/installer/sources/inf/setup.cfg)
+        key=$(del_cr <"$setup_cfg" | grep -Eix 'Value=([A-Z0-9]{5}-){4}[A-Z0-9]{5}' | cut -d= -f2 | grep .)
         sed -i "s/%key%/$key/" /tmp/autounattend.xml
     else
-        # shellcheck disable=SC2010
-        if ls -d /os/installer/sources/* | grep -iq ei.cfg; then
+        if [ -f "$(get_path_in_correct_case /os/installer/sources/ei.cfg)" ]; then
             # 镜像有 ei.cfg，删除 key 字段
             sed -i "/%key%/d" /tmp/autounattend.xml
         else

@@ -48,7 +48,6 @@ usage_and_exit() {
 Usage: $reinstall_____ anolis      7|8|23
                        opencloudos 8|9|23
                        rocky       8|9
-                       redhat      8|9 --img="http://xxx.com/xxx.qcow2"
                        oracle      8|9
                        almalinux   8|9
                        centos      9|10
@@ -64,6 +63,7 @@ Usage: $reinstall_____ anolis      7|8|23
                        gentoo
                        aosc
                        fnos
+                       redhat      --img="http://access.cdn.redhat.com/xxx.qcow2"
                        dd          --img="http://xxx.com/yyy.zzz" (raw image stores in raw/vhd/tar/gz/xz/zst)
                        windows     --image-name="windows xxx yyy" --lang=xx-yy
                        windows     --image-name="windows xxx yyy" --iso="http://xxx.com/xxx.iso"
@@ -93,14 +93,20 @@ info() {
         shift
         msg=$*
     else
-        msg=$(to_upper <<<"$@")
+        msg="***** $(to_upper <<<"$*") *****"
     fi
-
-    echo_color_text '\e[32m' "***** $msg *****" >&2
+    echo_color_text '\e[32m' "$msg" >&2
 }
 
 warn() {
-    echo_color_text '\e[33m' "Warning: $*" >&2
+    local msg
+    if [ "$1" = false ]; then
+        shift
+        msg=$*
+    else
+        msg="Warning: $*"
+    fi
+    echo_color_text '\e[33m' "$msg" >&2
 }
 
 error() {
@@ -838,11 +844,10 @@ find_windows_iso() {
     aarch64) arch_win=arm64 ;;
     esac
 
-    get_windows_iso_links
     get_windows_iso_link
 }
 
-get_windows_iso_links() {
+get_windows_iso_link() {
     get_label_msdn() {
         if [ -n "$server" ]; then
             case "$version" in
@@ -872,7 +877,6 @@ get_windows_iso_links() {
                     esac
                     ;;
                 homebasic | homepremium | business | ultimate) echo _ ;;
-                enterprise) echo enterprise ;;
                 esac
                 ;;
             7)
@@ -882,18 +886,10 @@ get_windows_iso_links() {
                     x86) echo ultimate ;;
                     esac
                     ;;
-                professional) echo professional ;;
-                homebasic | homepremium | ultimate) echo ultimate ;;
-                enterprise) echo enterprise ;;
+                homebasic | homepremium | professional | ultimate) echo ultimate ;;
                 esac
                 ;;
-            8.1)
-                case "$edition" in
-                '') ;; # massgrave 不提供 windows 8.1 家庭版链接
-                pro) echo pro ;;
-                enterprise) echo enterprise ;;
-                esac
-                ;;
+            # 8.1 需到 msdl.gravesoft.dev 下载
             10)
                 case "$edition" in
                 home | 'home single language') echo consumer ;;
@@ -945,6 +941,25 @@ get_windows_iso_links() {
         esac
     }
 
+    get_label_msdl() {
+        case "$version" in
+        8.1)
+            case "$edition" in
+            '' | pro) echo _ ;;
+            esac
+            ;;
+        11)
+            case "$edition" in
+            home | 'home single language' | pro | education | 'pro education' | 'pro for workstations')
+                case "$arch_win" in
+                arm64) echo _ ;;
+                esac
+                ;;
+            esac
+            ;;
+        esac
+    }
+
     get_page() {
         if [ "$arch_win" = arm64 ]; then
             echo arm
@@ -967,6 +982,7 @@ get_windows_iso_links() {
 
     # 部分 bash 不支持 $() 里面嵌套case，所以定义成函数
     label_msdn=$(get_label_msdn)
+    label_msdl=$(get_label_msdl)
     label_vlsc=$(get_label_vlsc)
     page=$(get_page)
 
@@ -976,25 +992,32 @@ get_windows_iso_links() {
     echo "Version:    $version"
     echo "Edition:    $edition"
     echo "Label msdn: $label_msdn"
+    echo "Label msdl: $label_msdl"
     echo "Label vlsc: $label_vlsc"
     echo "List:       $page_url"
     echo
 
-    if [ -z "$page" ] || { [ -z "$label_msdn" ] && [ -z "$label_vlsc" ]; }; then
+    if [ -z "$page" ] || { [ -z "$label_msdn" ] && [ -z "$label_msdl" ] && [ -z "$label_vlsc" ]; }; then
         error_and_exit "Not support find this iso. Check if --image-name is wrong. If not, set --iso manually."
     fi
 
-    curl -L "$page_url" | grep -ioP 'https://.*?.(iso|img)' >$tmp/win.list
-
-    # 如果不是 ltsc ，应该先去除 ltsc 链接，否则最终链接有 ltsc 的
-    # 例如查找 windows 10 iot enterprise，会得到
-    # en-us_windows_10_iot_enterprise_ltsc_2021_arm64_dvd_e8d4fc46.iso
-    # en-us_windows_10_iot_enterprise_version_22h2_arm64_dvd_39566b6b.iso
-    # sed -Ei 和 sed -iE 是不同的
-    if is_ltsc; then
-        sed -Ei '/ltsc|ltsb/!d' $tmp/win.list
+    if [ -n "$label_msdl" ]; then
+        iso=$(curl -L "$page_url" | grep -ioP 'https://.*?#[0-9]+' | head -1 | grep .)
     else
-        sed -Ei '/ltsc|ltsb/d' $tmp/win.list
+        curl -L "$page_url" | grep -ioP 'https://.*?.(iso|img)' >$tmp/win.list
+
+        # 如果不是 ltsc ，应该先去除 ltsc 链接，否则最终链接有 ltsc 的
+        # 例如查找 windows 10 iot enterprise，会得到
+        # en-us_windows_10_iot_enterprise_ltsc_2021_arm64_dvd_e8d4fc46.iso
+        # en-us_windows_10_iot_enterprise_version_22h2_arm64_dvd_39566b6b.iso
+        # sed -Ei 和 sed -iE 是不同的
+        if is_ltsc; then
+            sed -Ei '/ltsc|ltsb/!d' $tmp/win.list
+        else
+            sed -Ei '/ltsc|ltsb/d' $tmp/win.list
+        fi
+
+        get_windows_iso_link_inner
     fi
 }
 
@@ -1003,7 +1026,7 @@ get_shortest_line() {
     awk '(NR == 1 || length($0) < length(shortest)) { shortest = $0 } END { print shortest }'
 }
 
-get_windows_iso_link() {
+get_windows_iso_link_inner() {
     regexs=()
 
     # msdn
@@ -1423,25 +1446,27 @@ Continue?
         if [[ "$iso" = magnet:* ]]; then
             : # 不测试磁力链接
         else
-            iso_tested=false
+            # 需要用户输入 massgrave.dev 直链
+            if grep -Eiq '\.massgrave\.dev/.*\.(iso|img)$' <<<"$iso" ||
+                grep -Eiq '\.gravesoft\.dev/#[0-9]+$' <<<"$iso"; then
+                info "Set Direct link"
+                # MobaXterm 不支持
+                # printf '\e]8;;http://example.com\e\\This is a link\e]8;;\e\\\n'
 
-            # 获取 massgrave.dev 直链
-            if grep -Eiq '\.massgrave\.dev/.*\.(iso|img)' <<<"$iso"; then
-                # 如果已经是 iso 直链则跳过下面的 iso 测试
-                if test_url_grace "$iso" iso; then
-                    iso_tested=true
-                else
-                    msg="Could not find direct link for $iso"
-                    if ! iso=$(grep -oE 'https?.*\.iso[^"]*' $tmp/img-test | sed 's/&amp;/\&/g' | grep .); then
-                        error_and_exit "$msg"
-                    fi
+                # MobaXterm 不显示为超链接
+                # info false "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
+                # info false "Please open $iso in browser to get the direct link and paste it here."
+
+                echo "请在浏览器中打开 $iso 获取直链并粘贴到这里。"
+                echo "Please open $iso in browser to get the direct link and paste it here."
+                IFS= read -r -p "Direct Link: " iso
+                if [ -z "$iso" ]; then
+                    error_and_exit "ISO Link is empty."
                 fi
             fi
 
             # 测试是否是 iso
-            if ! $iso_tested; then
-                test_url "$iso" iso
-            fi
+            test_url "$iso" iso
 
             # 判断 iso 架构是否兼容
             # https://gitlab.com/libosinfo/osinfo-db/-/tree/main/data/os/microsoft.com?ref_type=heads
@@ -1670,13 +1695,11 @@ Continue with DD?
     }
 
     setos_redhat() {
-        # el 10 需要 x86-64-v3
-        if [ "$basearch" = x86_64 ] && [ "$releasever" -ge 10 ]; then
-            assert_cpu_supports_x86_64_v3
-        fi
-
         if is_use_cloud_image; then
-            # ci
+            # el 10 需要 x86-64-v3
+            if [ "$basearch" = x86_64 ] && [[ "$img" = *rhel-10* ]]; then
+                assert_cpu_supports_x86_64_v3
+            fi
             eval "${step}_img='$img'"
         else
             :
@@ -1791,7 +1814,6 @@ verify_os_name() {
         'opencloudos 8|9|23' \
         'almalinux   8|9' \
         'rocky       8|9' \
-        'redhat      8|9' \
         'oracle      8|9' \
         'fedora      41|42' \
         'nixos       24.11' \
@@ -1800,6 +1822,7 @@ verify_os_name() {
         'alpine      3.18|3.19|3.20|3.21' \
         'openeuler   20.03|22.03|24.03|25.03' \
         'ubuntu      16.04|18.04|20.04|22.04|24.04|25.04' \
+        'redhat' \
         'kali' \
         'arch' \
         'gentoo' \
