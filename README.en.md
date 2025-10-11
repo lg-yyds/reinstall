@@ -49,7 +49,7 @@ The system requirements for the target system are as follows:
 | <img width="16" height="16" src="https://www.alpinelinux.org/alpine-logo.ico" /> Alpine                                                                                                                                                                                                                                                                                | 3.19, 3.20, 3.21, 3.22                | 256 MB    | 1 GB             |
 | <img width="16" height="16" src="https://www.debian.org/favicon.ico" /> Debian                                                                                                                                                                                                                                                                                         | 9, 10, 11, 12, 13                     | 256 MB    | 1 ~ 1.5 GB ^     |
 | <img width="16" height="16" src="https://github.com/bin456789/reinstall/assets/7548515/f74b3d5b-085f-4df3-bcc9-8a9bd80bb16d" /> Kali                                                                                                                                                                                                                                   | Rolling                               | 256 MB    | 1 ~ 1.5 GB ^     |
-| <img width="16" height="16" src="https://documentation.ubuntu.com/server/_static/favicon.png" /> Ubuntu                                                                                                                                                                                                                                                                | 16.04 LTS - 24.04 LTS, 25.04          | 512 MB \* | 2 GB             |
+| <img width="16" height="16" src="https://documentation.ubuntu.com/server/_static/favicon.png" /> Ubuntu                                                                                                                                                                                                                                                                | 16.04 LTS - 24.04 LTS, 25.10          | 512 MB \* | 2 GB             |
 | <img width="16" height="16" src="https://img.alicdn.com/imgextra/i1/O1CN01oJnJZg1yK4RzI4Rx2_!!6000000006559-2-tps-118-118.png" /> Anolis                                                                                                                                                                                                                               | 7, 8, 23                              | 512 MB \* | 5 GB             |
 | <img width="16" height="16" src="https://www.redhat.com/favicon.ico" /> RHEL &nbsp;<img width="16" height="16" src="https://almalinux.org/fav/favicon.ico" /> AlmaLinux &nbsp;<img width="16" height="16" src="https://rockylinux.org/favicon.png" /> Rocky &nbsp;<img width="16" height="16" src="https://www.oracle.com/asset/web/favicons/favicon-32.png" /> Oracle | 8, 9, 10                              | 512 MB \* | 5 GB             |
 | <img width="16" height="16" src="https://opencloudos.org/qq.ico" /> OpenCloudOS                                                                                                                                                                                                                                                                                        | 8, 9, Stream 23                       | 512 MB \* | 5 GB             |
@@ -165,7 +165,7 @@ bash reinstall.sh anolis      7|8|23
                   opensuse    15.6|tumbleweed
                   alpine      3.19|3.20|3.21|3.22
                   openeuler   20.03|22.03|24.03|25.09
-                  ubuntu      16.04|18.04|20.04|22.04|24.04|25.04 [--minimal]
+                  ubuntu      16.04|18.04|20.04|22.04|24.04|25.10 [--minimal]
                   kali
                   arch
                   gentoo
@@ -496,6 +496,14 @@ Open File menu > Open Image File, select the iso to be installed to get the imag
 > In the Chinese version of Windows 10 LTSC 2021 ISO `zh-cn_windows_10_enterprise_ltsc_2021_x64_dvd_033b7312.iso`, the `wsappx` process may indefinitely consume CPU resources.
 >
 > The solution is to update the system patches or manually install the `VCLibs` library <https://www.google.com/search?q=ltsc+wsappx>.
+
+> [!WARNING]
+> When installing Windows ISOs released in `May 2022` or later on GCP, the system may repeatedly reboot during the Windows installation (PE) stage. You can resolve this issue using one of the following two methods:
+>
+> 1. Add the `--force-boot-mode bios` parameter. The script will install Windows in `BIOS boot + MBR partition table` mode.
+> <br /> - (Optional) After installation, you can convert it to `EFI boot + GPT partition table` using the command `MBR2GPT /convert /allowFullOS`.
+>
+> 2. Create a custom RAW image and install it via DD.
 
 #### Considerations for Installing Windows on ARM
 
