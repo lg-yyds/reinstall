@@ -10,7 +10,7 @@ set -eE
 
 # 用于判断 reinstall.sh 和 trans.sh 是否兼容
 # shellcheck disable=SC2034
-SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0003
+SCRIPT_VERSION=4BACD833-A585-23BA-6CBB-9AA4E08E0004
 
 TRUE=0
 FALSE=1
@@ -87,11 +87,20 @@ apk() {
     retry 5 command apk "$@" >&2
 }
 
+show_url_in_args() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+        [Hh][Tt][Tt][Pp][Ss]://* | [Hh][Tt][Tt][Pp]://* | [Mm][Aa][Gg][Nn][Ee][Tt]:*) echo "$1" ;;
+        esac
+        shift
+    done
+}
+
 # 在没有设置 set +o pipefail 的情况下，限制下载大小：
 # retry 5 command wget | head -c 1048576 会触发 retry，下载 5 次
 # command wget "$@" --tries=5 | head -c 1048576 不会触发 wget 自带的 retry，只下载 1 次
 wget() {
-    echo "$@" | grep -o 'http[^ ]*' >&2
+    show_url_in_args "$@" >&2
     if command wget 2>&1 | grep -q BusyBox; then
         # busybox wget 没有重试功能
         # 好像默认永不超时
@@ -194,7 +203,8 @@ download() {
         url=$torrent
     fi
 
-    # intel 禁止了 aria2 下载
+    # intel 禁止了 aria2 下载驱动
+    # intel 禁止了 wget 下载网页内容
     # 腾讯云 virtio 驱动也禁止了 aria2 下载
 
     # -o 设置 http 下载文件名
@@ -203,7 +213,7 @@ download() {
         -d "$(dirname "$path")" \
         -o "$(basename "$path")" \
         -O "1=$(basename "$path")" \
-        -U Wget/1.25.0
+        -U curl/7.54.1
 
     # opensuse 官方镜像支持 metalink
     # aira2 无法重命名用 metalink 下载的文件
@@ -294,7 +304,7 @@ setup_websocketd() {
     pkill websocketd || true
     # websocketd 遇到 \n 才推送，因此要转换 \r 为 \n
     websocketd --port "$web_port" --loglevel=fatal --staticdir=/tmp \
-        stdbuf -oL -eL sh -c "tail -fn+0 /reinstall.log | tr '\r' '\n'" &
+        stdbuf -oL -eL sh -c "tail -fn+0 /reinstall.log | tr '\r' '\n' | grep -Fiv -e password -e token" &
 }
 
 get_approximate_ram_size() {
@@ -313,7 +323,7 @@ get_approximate_ram_size() {
 setup_web_if_enough_ram() {
     total_ram=$(get_approximate_ram_size)
     # 512内存才安装
-    if [ $total_ram -gt 400 ]; then
+    if [ "$total_ram" -ge 400 ]; then
         # lighttpd 虽然运行占用内存少，但安装占用空间大
         # setup_lighttpd
         # setup_nginx
@@ -758,17 +768,19 @@ is_windows_support_rdnss() {
     [ "$build_ver" -ge 15063 ]
 }
 
-get_windows_version_from_dll() {
-    local dll=$1
-    [ -f "$dll" ] || error_and_exit "File not found: $dll"
+get_windows_version_from_windows_drive() {
+    local os_dir=$1
 
-    apk add pev
-    local ver
-    ver="$(peres -v "$dll" | grep 'Product Version:' | awk '{print $NF}')"
-    echo "Version: $ver" >&2
-    IFS=. read -r nt_ver_major nt_ver_minor build_ver rev_ver _ < <(echo "$ver")
+    apk add hivex pev
+    ntoskrnl_exe=$(find_file_ignore_case $os_dir/Windows/System32/ntoskrnl.exe)
+    hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SOFTWARE)
+    IFS=. read -r nt_ver_major nt_ver_minor _ rev_ver _ \
+        < <(peres -v "$ntoskrnl_exe" | grep 'Product Version:' | awk '{print $NF}')
     nt_ver="$nt_ver_major.$nt_ver_minor"
-    apk del pev
+    # win10 22h2 19045 的 exe/dll 版本还是 19041 的，因此要从注册表获取
+    build_ver=$(hivexget $hive 'Microsoft\Windows NT\CurrentVersion' CurrentBuildNumber)
+    echo "Version: $nt_ver_major.$nt_ver_minor.$build_ver.$rev_ver" >&2
+    apk del hivex pev
 }
 
 is_elts() {
@@ -934,10 +946,14 @@ unix2dos() {
 }
 
 insert_into_file() {
-    file=$1
-    location=$2
-    regex_to_find=$3
+    local file=$1
+    local location=$2
+    local regex_to_find=$3
     shift 3
+
+    if ! [ -f "$file" ]; then
+        error_and_exit "File not found: $file"
+    fi
 
     # 默认 grep -E
     if [ $# -eq 0 ]; then
@@ -1852,9 +1868,8 @@ add_frpc_systemd_service_if_need() {
         # 下载 frpc
         # 注意下载的 frpc owner 不是 root:root
         frpc_url=$(get_frpc_url linux)
-        basename=$(echo "$frpc_url" | awk -F/ '{print $NF}' | sed 's/\.tar\.gz//')
         download "$frpc_url" "$os_dir/frpc.tar.gz"
-        tar xzf "$os_dir/frpc.tar.gz" "$basename/frpc" -O >"$os_dir/usr/local/bin/frpc"
+        tar xzf "$os_dir/frpc.tar.gz" "*/frpc" -O >"$os_dir/usr/local/bin/frpc"
         rm -f "$os_dir/frpc.tar.gz"
         chmod a+x "$os_dir/usr/local/bin/frpc"
 
@@ -2274,8 +2289,8 @@ aria2c() {
         apk add coreutils
     fi
 
-    # 指定 bt 种子时没有链接，因此忽略错误
-    echo "$@" | grep -oE '(http|https|magnet):[^ ]*' || true
+    # 显示 url
+    show_url_in_args "$@" >&2
 
     # 下载 tracker
     # 在 sub shell 里面无法保存变量，因此写入到文件
@@ -2440,8 +2455,8 @@ create_part() {
     # shellcheck disable=SC2154
     if [ "$distro" = windows ]; then
         if ! size_bytes=$(get_link_file_size "$iso"); then
-            # 默认值，最大的iso 23h2 假设 7g
-            size_bytes=$((7 * 1024 * 1024 * 1024))
+            # 默认值，目前最大的 iso 小于 8g
+            size_bytes=$((8 * 1024 * 1024 * 1024))
         fi
 
         # 按iso容量计算分区大小
@@ -3777,7 +3792,7 @@ modify_os_on_disk() {
                 # shellcheck disable=SC1090
                 # find_file_ignore_case 也在这个文件里面
                 . <(wget -O- $confhome/windows-driver-utils.sh)
-                if ntoskrnl_exe=$(find_file_ignore_case /os/Windows/System32/ntoskrnl.exe 2>/dev/null); then
+                if find_file_ignore_case /os/Windows/System32/ntoskrnl.exe >/dev/null 2>&1; then
                     # 其他地方会用到
                     is_windows() { true; }
                     # 重新挂载为读写、忽略大小写
@@ -3798,7 +3813,7 @@ modify_os_on_disk() {
                         mount -t ntfs3 -o nocase,rw,force /dev/$part /os
                     fi
                     # 获取版本号，其他地方会用到
-                    get_windows_version_from_dll "$ntoskrnl_exe"
+                    get_windows_version_from_windows_drive /os
                     modify_windows /os
                     return
                 fi
@@ -4413,7 +4428,7 @@ install_qcow_by_copy() {
             fi
 
             # el7 yum 可能会使用 ipv6，即使没有 ipv6 网络
-            if [ "$(cat /dev/netconf/eth*/ipv6_has_internet | sort -u)" = 0 ]; then
+            if [ "$(cat /dev/netconf/*/ipv6_has_internet | sort -u)" = 0 ]; then
                 echo 'ip_resolve=4' >>/os/etc/yum.conf
             fi
 
@@ -5717,8 +5732,7 @@ install_windows() {
     # 3. 是否支持 sha256
     # 4. Installation Type
     wimmount "$iso_install_wim" "$image_index" /wim/
-    ntoskrnl_exe=$(find_file_ignore_case /wim/Windows/System32/ntoskrnl.exe)
-    get_windows_version_from_dll "$ntoskrnl_exe"
+    get_windows_version_from_windows_drive /wim
     windows_type=$(get_windows_type_from_windows_drive /wim)
     {
         find_file_ignore_case /wim/Windows/System32/sacsess.exe && has_sac=true || has_sac=false
@@ -5820,6 +5834,7 @@ install_windows() {
     # 用注册表无法绕过
     # https://github.com/pbatard/rufus/issues/1990
     # https://learn.microsoft.com/windows/iot/iot-enterprise/Hardware/System_Requirements
+    # win11 旧版本安装程序（24h2之前）无法用 setup.exe /product server 跳过 cpu 核数限制，因此在xml里解除限制
     if [ "$product_ver" = "11" ] && [ "$(nproc)" -le 1 ]; then
         wiminfo "$install_wim" "$image_index" --image-property WINDOWS/INSTALLATIONTYPE=Server
     fi
@@ -5959,28 +5974,43 @@ install_windows() {
             esac
         )
 
-        file=$(
+        url=$(
             case "$product_ver" in
-            '7' | '2008 r2') $support_sha256 &&
+            '7' | '2008 r2')
+                # 现在官网只有 25.0
                 # 25.0 比 24.5 只更新了 ProSet 软件，驱动相同
-                echo 18713/eng/prowin${arch_intel}legacy.exe || # 25.0 有部分文件是 sha256 签名
-                echo 29323/eng/prowin${arch_intel}legacy.exe ;; # 24.3 sha1 签名
-            # 之前有 Intel® Network Adapter Driver for Windows 8* - Final Release ，版本 22.7.1
-            # 但已被删除，原因不明
-            # https://web.archive.org/web/20250501043104/https://www.intel.com/content/www/us/en/download/16765/intel-network-adapter-driver-for-windows-8-final-release.html
-            # 27.8 有 NDIS63 文件夹，意味着支持 Windows 8
-            # 27.8 相比 22.7.1，可能有些老设备不支持了，但我们不管了
-            '8' | '8.1') echo 764813/Wired_driver_27.8_${arch_intel}.zip ;;
-            '2012' | '2012 r2') echo 772074/Wired_driver_28.0_${arch_intel}.zip ;;
+                # 25.0 有部分文件是 sha256 签名
+                # 24.3 全部文件是 sha1 签名
+                # https://web.archive.org/web/20250405130938/https://www.intel.com/content/www/us/en/download/15590/29323/intel-network-adapter-driver-for-windows-7-final-release.html
+                echo https://downloadmirror.intel.com/18713/eng/prowin${arch_intel}legacy.exe
+                ;;
+            '8' | '8.1')
+                # 之前有 Intel® Network Adapter Driver for Windows 8* - Final Release ，版本 22.7.1
+                # 但已被删除，原因不明
+                # https://web.archive.org/web/20250501043104/https://www.intel.com/content/www/us/en/download/16765/intel-network-adapter-driver-for-windows-8-final-release.html
+                # 27.8 有 NDIS63 文件夹，意味着支持 Windows 8
+                # 27.8 相比 22.7.1，可能有些老设备不支持了，但我们不管了
+                echo https://downloadmirror.intel.com/764813/Wired_driver_27.8_${arch_intel}.zip
+                ;;
+            '2012' | '2012 r2')
+                echo https://downloadmirror.intel.com/772074/Wired_driver_28.0_${arch_intel}.zip
+                ;;
+            # 2016 2019 2022 2025 win10 win11
             *) case "${arch_intel}" in
-                32) echo 849483/Wired_driver_30.0.1_${arch_intel}.zip ;;
-                x64) echo 864508/Wired_driver_30.4_${arch_intel}.zip ;;
+                32)
+                    echo https://downloadmirror.intel.com/849483/Wired_driver_30.0.1_${arch_intel}.zip
+                    ;;
+                x64)
+                    # intel 禁止了 wget 下载网页
+                    wget -U curl/7.54.1 https://www.intel.com/content/www/us/en/download/727998.html -O- |
+                        grep -Eio -m1 '"https://.+/Wired_driver.+\.(zip|exe)"' | tr -d '"' | grep .
+                    ;;
                 esac ;;
             esac
         )
 
         # 注意 intel 禁止了 aria2 下载
-        download https://downloadmirror.intel.com/$file $drv/intel.zip
+        download "$url" $drv/intel.zip
 
         # inf 可能是 UTF-16 LE？因此用 rg 搜索
         # 用 busybox unzip 解压 win10 驱动时，路径和文件名会粘在一起

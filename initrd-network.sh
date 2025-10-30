@@ -240,11 +240,17 @@ test_connect() {
 test_internet() {
     for i in $(seq 5); do
         echo "Testing Internet Connection. Test $i... "
-        if is_need_test_ipv4 && { local current_ipv4_addr; current_ipv4_addr="$(get_first_ipv4_addr | remove_netmask)"; test_connect "$current_ipv4_addr" "$ipv4_dns1" >/dev/null 2>&1 || test_connect "$current_ipv4_addr" "$ipv4_dns2" >/dev/null 2>&1; }; then
+        if is_need_test_ipv4 &&
+            current_ipv4_addr="$(get_first_ipv4_addr | remove_netmask)" &&
+            { test_connect "$current_ipv4_addr" "$ipv4_dns1" ||
+                test_connect "$current_ipv4_addr" "$ipv4_dns2"; } >/dev/null 2>&1; then
             echo "IPv4 has internet."
             ipv4_has_internet=true
         fi
-        if is_need_test_ipv6 && { local current_ipv6_addr; current_ipv6_addr="$(get_first_ipv6_addr | remove_netmask)"; test_connect "$current_ipv6_addr" "$ipv6_dns1" >/dev/null 2>&1 || test_connect "$current_ipv6_addr" "$ipv6_dns2" >/dev/null 2>&1; }; then
+        if is_need_test_ipv6 &&
+            current_ipv6_addr="$(get_first_ipv6_addr | remove_netmask)" &&
+            { test_connect "$current_ipv6_addr" "$ipv6_dns1" ||
+                test_connect "$current_ipv6_addr" "$ipv6_dns2"; } >/dev/null 2>&1; then
             echo "IPv6 has internet."
             ipv6_has_internet=true
         fi
@@ -339,8 +345,9 @@ EOF
     db_progress INFO netcfg/link_detect_progress
 else
     # alpine
-    # h3c 移动云电脑使用 udhcpc 会重复提示 sending select，无法获得 ipv6，因此使用 dhcpcd
-    method=dhcpcd
+    # h3c 移动云电脑使用 udhcpc 会重复提示 sending select，无法获得 ipv6
+    # dhcpcd 会配置租约时间，过期会移除 IP，但我们的没有在后台运行 dhcpcd ，因此用 udhcpc
+    method=udhcpc
 
     case "$method" in
     udhcpc)
