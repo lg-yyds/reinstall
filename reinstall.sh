@@ -35,6 +35,11 @@ trap_err() {
     sed -n "$line_no"p "$THIS_SCRIPT"
 }
 
+if ! { [ -n "$BASH" ] && [ -n "$BASH_VERSION" ]; }; then
+    echo "Please run this script with bash." >&2
+    exit 1
+fi
+
 usage_and_exit() {
     if is_in_windows; then
         reinstall_____='.\reinstall.bat'
@@ -3822,9 +3827,6 @@ get_unix_path() {
 }
 
 # 脚本入口
-if ! [ -n "$BASH" ] && [ -n "$BASH_VERSION" ]; then
-    error_and_exit "Please run this script with bash."
-fi
 
 if mount | grep -q 'tmpfs on / type tmpfs'; then
     error_and_exit "Can't run this script in Live OS."

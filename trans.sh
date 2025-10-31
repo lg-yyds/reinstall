@@ -1868,8 +1868,11 @@ add_frpc_systemd_service_if_need() {
         # 下载 frpc
         # 注意下载的 frpc owner 不是 root:root
         frpc_url=$(get_frpc_url linux)
+        basename=$(echo "$frpc_url" | awk -F/ '{print $NF}' | sed 's/\.tar\.gz//')
         download "$frpc_url" "$os_dir/frpc.tar.gz"
-        tar xzf "$os_dir/frpc.tar.gz" "*/frpc" -O >"$os_dir/usr/local/bin/frpc"
+        # busybox tar 不支持 wildcard
+        # tar: */frpc: not found in archive
+        tar xzf "$os_dir/frpc.tar.gz" "$basename/frpc" -O >"$os_dir/usr/local/bin/frpc"
         rm -f "$os_dir/frpc.tar.gz"
         chmod a+x "$os_dir/usr/local/bin/frpc"
 
@@ -6003,7 +6006,7 @@ install_windows() {
                 x64)
                     # intel 禁止了 wget 下载网页
                     wget -U curl/7.54.1 https://www.intel.com/content/www/us/en/download/727998.html -O- |
-                        grep -Eio -m1 '"https://.+/Wired_driver.+\.(zip|exe)"' | tr -d '"' | grep .
+                        grep -Eio -m1 "\"https://.+/(Wired_driver|prowin).*${arch_intel}(legacy)?\.(zip|exe)\"" | tr -d '"' | grep .
                     ;;
                 esac ;;
             esac
