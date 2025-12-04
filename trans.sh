@@ -1630,9 +1630,9 @@ install_nixos() {
         fi
 
         # 备用方案
-        # 1. 从 https://mirror.nju.edu.cn/nix-channels/nixos-25.05/nixexprs.tar.xz 获取
-        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.05/pkgs/tools/package-management/nix/default.nix
-        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.05/nixos/modules/installer/tools/nix-fallback-paths.nix
+        # 1. 从 https://mirror.nju.edu.cn/nix-channels/nixos-25.11/nixexprs.tar.xz 获取
+        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.11/pkgs/tools/package-management/nix/default.nix
+        #    https://github.com/NixOS/nixpkgs/blob/nixos-25.11/nixos/modules/installer/tools/nix-fallback-paths.nix
         # 2. 安装最新版 nix，添加 nixos channel 后获取
         #    nix eval -f '<nixpkgs>' --raw 'nixVersions.stable.version' --extra-experimental-features nix-command
 
@@ -2756,14 +2756,6 @@ mount_pseudo_fs() {
     fi
 }
 
-get_yq_name() {
-    if grep -q '3\.1[6789]' /etc/alpine-release; then
-        echo yq
-    else
-        echo yq-go
-    fi
-}
-
 create_cloud_init_network_config() {
     ci_file=$1
     recognize_static6=${2:-true}
@@ -2775,7 +2767,7 @@ create_cloud_init_network_config() {
     mkdir -p "$(dirname "$ci_file")"
     touch "$ci_file"
 
-    apk add "$(get_yq_name)"
+    apk add yq-go
 
     need_set_dns4=false
     need_set_dns6=false
@@ -2889,7 +2881,7 @@ create_cloud_init_network_config() {
         yq -i "del(.network.config[$config_id] | select(has(\"address\") | not))" $ci_file
     fi
 
-    apk del "$(get_yq_name)"
+    apk del yq-go
 
     # 查看文件
     info "Cloud-init network config"
@@ -3252,7 +3244,7 @@ remove_cloud_init() {
     # disable 会出现一堆提示信息，也无法 disable
     for unit in $(
         chroot $os_dir systemctl list-unit-files |
-            grep -E '^(cloud-init-.*|cloud-config|cloud-final)\.(service|socket)' | grep enabled | awk '{print $1}'
+            grep -E '^(cloud-init|cloud-init-.*|cloud-config|cloud-final)\.(service|socket)' | grep enabled | awk '{print $1}'
     ); do
         # 服务不存在时会报错
         if chroot $os_dir systemctl -q is-enabled "$unit"; then
@@ -3269,7 +3261,7 @@ remove_cloud_init() {
                 ;;
             zypper)
                 # 加上 -u 才会删除依赖
-                chroot $os_dir zypper remove -y -u cloud-init
+                chroot $os_dir zypper remove -y -u cloud-init cloud-init-config-suse
                 ;;
             apt-get)
                 # ubuntu 25.04 开始有 cloud-init-base
@@ -3658,24 +3650,35 @@ EOF
         fi
 
         # rpm -qi 不支持通配符
-        installed_kernel=$(chroot $os_dir rpm -qa 'kernel-*' --qf '%{NAME}\n' | grep -v firmware)
-        if ! [ "$(echo "$installed_kernel" | wc -l)" -eq 1 ]; then
-            error_and_exit "Unexpected kernel installed: $installed_kernel"
+        origin_kernel=$(chroot $os_dir rpm -qa 'kernel-*' --qf '%{NAME}\n' | grep -v firmware)
+        if ! [ "$(echo "$origin_kernel" | wc -l)" -eq 1 ]; then
+            error_and_exit "Unexpected kernel installed: $origin_kernel"
         fi
 
-        # 不能同时装 kernel-default-base 和 kernel-default
+        # 16.0 能同时装 kernel-default-base 和 kernel-default
+        # tw 不能同时装 kernel-default-base 和 kernel-default
         # 因此需要添加 --force-resolution 自动删除 kernel-default-base
-        if ! [ "$installed_kernel" = "$target_kernel" ]; then
+        if ! [ "$origin_kernel" = "$target_kernel" ]; then
             # x86 必须设置一个密码，否则报错，arm 没有这个问题
             # Failed to get root password hash
             # Failed to import /etc/uefi/certs/76B6A6A0.crt
             # warning: %post(kernel-default-5.14.21-150500.55.83.1.x86_64) scriptlet failed, exit status 255
+            need_password_workaround=false
             if grep -q '^root:[:!*]' $os_dir/etc/shadow; then
+                need_password_workaround=true
+            fi
+
+            if $need_password_workaround; then
                 echo "root:$(mkpasswd '')" | chroot $os_dir chpasswd -e
-                chroot $os_dir zypper install -y --force-resolution $target_kernel
+            fi
+            # 安装新内核
+            chroot $os_dir zypper install -y --force-resolution $target_kernel
+            # 删除旧内核
+            if chroot $os_dir rpm -q $origin_kernel; then
+                chroot $os_dir zypper remove -y --force-resolution $origin_kernel
+            fi
+            if $need_password_workaround; then
                 chroot $os_dir passwd -d root
-            else
-                chroot $os_dir zypper install -y --force-resolution $target_kernel
             fi
         fi
 
