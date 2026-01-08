@@ -1146,7 +1146,9 @@ get_windows_iso_link_inner() {
         regex=${regex// /_}
 
         echo "looking for: $regex" >&2
-        if iso=$(grep -Ei "^$regex " "$tmp/win.list" | get_shortest_line_by_field 1 | awk '{print $2}' | grep .); then
+        if line=$(grep -Ei "^$regex " "$tmp/win.list" | get_shortest_line_by_field 1 | grep .) &&
+            iso=$(awk '{print $2}' <<<"$line" | grep .); then
+            echo "Selected: $line" >&2
             return
         fi
     done
