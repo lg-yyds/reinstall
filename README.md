@@ -248,8 +248,27 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 - `--ssh-port PORT` 修改 SSH 端口（安装期间观察日志用）
 - `--web-port PORT` 修改 Web 端口（安装期间观察日志用）
 - `--frpc-toml PATH` 添加 frpc 内网穿透（仅限 DD Windows），参数填本地路径或 HTTP 链接
+- `--cloud-data PATH_OR_URL` 为 DD Linux 镜像注入 cloud-init NoCloud 配置（仅限 DD Linux）
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性
 - `--hold 2` DD 结束后不重启，用于 SSH 登录修改系统内容，Windows 系统会挂载在 `/os`，Linux 系统**不会**自动挂载
+
+> [!TIP]
+>
+> `--cloud-data` 参数为本地目录或 HTTP 基础 URL，目录须包含 `user-data` 文件，`meta-data`、`network-config` 可选：
+>
+> ```
+> seed/
+> ├── user-data      # 必须
+> ├── meta-data      # 可选
+> └── network-config # 可选
+> ```
+>
+> ```bash
+> # 使用本地目录
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data /path/to/seed/
+> # 使用 HTTP 目录
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data "https://example.com/seed/"
+> ```
 
 > [!TIP]
 >

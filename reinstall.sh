@@ -3776,6 +3776,7 @@ This script is outdated, please download reinstall.sh again.
         fi
         # 校验：至少要有 user-data
         [ -f $initrd_dir/configs/cloud-data/user-data ] || error_and_exit "--cloud-data must contain user-data"
+        cloud_data_files=$(ls $initrd_dir/configs/cloud-data/ | tr '\n' ' ')
     fi
 
     if is_distro_like_debian $nextos_distro; then
@@ -4692,6 +4693,10 @@ if is_netboot_xyz; then
 elif is_alpine_live; then
     echo 'Reboot to start Alpine Live OS.'
 elif is_use_dd; then
+    if [ -n "$cloud_data" ]; then
+        echo "Cloud Data: $cloud_data"
+        echo "Cloud Data Files: $cloud_data_files"
+    fi
     show_dd_password_tips
     echo 'Reboot to start DD.'
 elif [ "$distro" = fnos ]; then

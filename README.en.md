@@ -248,8 +248,27 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 - `--ssh-port PORT` Change SSH port (for log observation during installation)
 - `--web-port PORT` Change Web port (for log observation during installation)
 - `--frpc-toml PATH` Add frpc for intranet tunneling (DD Windows only). Parameter can be local filepath or HTTP URL
+- `--cloud-data PATH_OR_URL` Inject cloud-init NoCloud configuration into the DD'd Linux image (DD Linux only)
 - `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
 - `--hold 2` Prevent reboot after the DD process finishes. For SSH login to modify system content. The Windows system will be mounted at `/os`, but Linux systems will **NOT** be automatically mounted.
+
+> [!TIP]
+>
+> `--cloud-data` accepts a local directory path or an HTTP base URL. The directory must contain a `user-data` file; `meta-data` and `network-config` are optional:
+>
+> ```
+> seed/
+> ├── user-data      # required
+> ├── meta-data      # optional
+> └── network-config # optional
+> ```
+>
+> ```bash
+> # Local directory
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data /path/to/seed/
+> # HTTP directory
+> bash reinstall.sh dd --img "https://example.com/xxx.xz" --cloud-data "https://example.com/seed/"
+> ```
 
 > [!TIP]
 >
