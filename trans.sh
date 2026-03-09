@@ -779,16 +779,52 @@ is_windows_support_rdnss() {
 get_windows_version_from_windows_drive() {
     local os_dir=$1
 
-    apk add hivex pev
-    ntoskrnl_exe=$(find_file_ignore_case $os_dir/Windows/System32/ntoskrnl.exe)
+    # https://wiki.tcl-lang.org/page/Windows+OS+name
+    # https://nsis.sourceforge.io/Get_Windows_version
+
+    # win10+ 才有 CurrentMajorVersionNumber 和 CurrentMinorVersionNumber
+    # CurrentVersion            6.3
+    # CurrentMajorVersionNumber  10
+    # CurrentMinorVersionNumber   0
+
+    apk add hivex
     hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SOFTWARE)
-    IFS=. read -r nt_ver_major nt_ver_minor _ rev_ver _ \
-        < <(peres -v "$ntoskrnl_exe" | grep 'Product Version:' | awk '{print $NF}')
-    nt_ver="$nt_ver_major.$nt_ver_minor"
+
+    get_current_version_key() {
+        hivexget "$hive" "Microsoft\Windows NT\CurrentVersion" "$1"
+    }
+
+    # nt_ver
+    if { nt_ver_major=$(get_current_version_key CurrentMajorVersionNumber) &&
+        nt_ver_minor=$(get_current_version_key CurrentMinorVersionNumber); } 2>/dev/null; then
+        nt_ver="$nt_ver_major.$nt_ver_minor"
+    else
+        # en_windows_vista_sp2_x64_dvd_342267.iso
+        # 安装前 CurrentVersion 是 6.0
+        # 安装后 CurrentVersion 是 6.0
+
+        # en_windows_vista_sp2_with_update_6003.23713_aio_7in1_x64_v26.01.13_by_adguard.iso
+        # 安装前 CurrentVersion 是 6.0.6002.18005
+        # 安装后 CurrentVersion 是 6.0
+
+        # 添加 cut 用于兼容这两种情况
+        nt_ver=$(get_current_version_key CurrentVersion | cut -d. -f1-2)
+    fi
+
+    # build_ver
     # win10 22h2 19045 的 exe/dll 版本还是 19041 的，因此要从注册表获取
-    build_ver=$(hivexget $hive 'Microsoft\Windows NT\CurrentVersion' CurrentBuildNumber)
-    echo "Version: $nt_ver_major.$nt_ver_minor.$build_ver.$rev_ver" >&2
-    apk del hivex pev
+    # vista sp2 iso 安装 KB4474419 后, CurrentBuild 是 6002, CurrentBuildNumber 是 6003
+    build_ver=$(get_current_version_key CurrentBuildNumber)
+
+    # rev_ver
+    # 实测 win10 winver 是从 UBR 读取 revision 版本
+    # vista sp2 iso 没有 UBR，后期有月度汇总更新包时才有 UBR
+    if ! rev_ver=$(get_current_version_key UBR 2>/dev/null); then
+        rev_ver=$(get_current_version_key BuildLabEx | cut -d. -f2)
+    fi
+
+    echo "Version: $nt_ver.$build_ver.$rev_ver" >&2
+    apk del hivex
 }
 
 is_elts() {
@@ -1120,6 +1156,17 @@ EOF
     post-up ip route add $ipv6_gateway dev $ethx
     post-up ip route add default via $ipv6_gateway dev $ethx
 EOF
+            fi
+
+            # 额外的 IPv6 地址（子网不含网关的地址）
+            get_netconf_to ipv6_extra_addrs
+            if [ -n "$ipv6_extra_addrs" ]; then
+                (
+                    IFS=','
+                    for _addr in $ipv6_extra_addrs; do
+                        echo "    post-up ip -6 addr add $_addr dev $ethx" >>$conf_file
+                    done
+                )
             fi
         fi
 
@@ -1493,12 +1540,12 @@ install_alpine() {
     chroot /os rc-update add fix-eth-name boot
 
     # 安装 frpc
-    if [ -s /configs/frpc.toml ]; then
+    if ls /configs/frpc.* >/dev/null 2>&1; then
         chroot /os apk add frp
         # chroot rc-update add 默认添加到 sysinit
         # 但不加 chroot 默认添加到 default
         chroot /os rc-update add frpc boot
-        cp /configs/frpc.toml /os/etc/frp/frpc.toml
+        cp -f /configs/frpc.* /os/etc/frp/
     fi
 
     # setup-disk 会自动选择固件，但不包括微码？
@@ -1724,19 +1771,40 @@ $(del_comment_lines </configs/ssh_keys | del_empty_lines | quote_line | add_spac
         nix_ssh_ports="services.openssh.ports = [ $ssh_port ];"
     fi
 
-    # 虽然是原始 frpc.toml (string) 转成 toml 类型，再转成最终使用的 frpc.toml (string)
-    # 但是可以避免原始 frpc.toml 有错误导致失联
-    if [ -s /configs/frpc.toml ]; then
+    if ls /configs/frpc.* >/dev/null 2>&1; then
         nix_frpc=$(
-            cat <<EOF
+            if false; then
+                # 原始 frpc.toml 转 toml 对象 ，再转成最终使用的 frpc.toml
+                # 可以避免原始 frpc.toml 有错误导致失联
+                # 但是 frpc 配置还支持 ini json yaml
+                # 因此不使用这个方法
+                cat <<EOF
 services.frp = {
   enable = true;
   role = "client";
   settings = builtins.fromTOML ''
-$(del_comment_lines </configs/frpc.toml | add_space 4)
+$(cat /configs/frpc.* | add_space 4)
   '';
 };
 EOF
+            else
+                # 直接使用原始文件
+                (
+                    umask 077
+                    cp /configs/frpc.* /os/etc/nixos/
+                )
+                ext=$(basename /configs/frpc.* | awk -F. '{print $NF}')
+                cat <<EOF
+services.frp = {
+  enable = true;
+  role = "client";
+};
+systemd.services.frp.serviceConfig = {
+  LoadCredential = "frpc.$ext:/etc/nixos/frpc.$ext";
+  ExecStart = lib.mkForce "\${pkgs.frp}/bin/frpc -c \\\${CREDENTIALS_DIRECTORY}/frpc.$ext";
+};
+EOF
+            fi
         )
     fi
 
@@ -1869,7 +1937,7 @@ get_frpc_url() {
 add_frpc_systemd_service_if_need() {
     local os_dir=$1
 
-    if [ -s /configs/frpc.toml ]; then
+    if ls /configs/frpc.* >/dev/null 2>&1; then
         mkdir -p "$os_dir/usr/local/bin"
         mkdir -p "$os_dir/usr/local/etc/frpc"
 
@@ -1885,7 +1953,7 @@ add_frpc_systemd_service_if_need() {
         chmod a+x "$os_dir/usr/local/bin/frpc"
 
         # frpc conf
-        cp /configs/frpc.toml "$os_dir/usr/local/etc/frpc/frpc.toml"
+        cp -f /configs/frpc.* "$os_dir/usr/local/etc/frpc/"
 
         # 添加服务
         add_systemd_service "$os_dir" frpc
@@ -3046,24 +3114,23 @@ modify_windows() {
     done
 
     # 5 frp
-    if [ -s /configs/frpc.toml ]; then
-        # 好像 win7 无法运行 frpc，暂时不管
-        windows_arch=$(get_windows_arch_from_windows_drive "$os_dir" | to_lower)
-        if [ "$windows_arch" = amd64 ] || [ "$windows_arch" = arm64 ]; then
-            mkdir -p "$os_dir/frpc/"
-            url=$(get_frpc_url windows "$nt_ver")
-            download "$url" $os_dir/frpc/frpc.zip
-            # -j 去除文件夹
-            # -C 筛选文件时不区分大小写，但 busybox zip 不支持
-            unzip -o -j "$os_dir/frpc/frpc.zip" '*/frpc.exe' -d "$os_dir/frpc/"
-            rm -f "$os_dir/frpc/frpc.zip"
-            cp -f /configs/frpc.toml "$os_dir/frpc/frpc.toml"
-            download "$confhome/windows-frpc.xml" "$os_dir/frpc/frpc.xml"
-            download "$confhome/windows-frpc.bat" "$os_dir/frpc/frpc.bat"
-            bats="$bats frpc\frpc.bat"
+    if ls /configs/frpc.* >/dev/null 2>&1; then
+        if [ "$(get_windows_arch_from_windows_drive "$os_dir" | to_lower)" = x86 ]; then
+            os_bit=32
         else
-            warn "$windows_arch Not Support frpc"
+            os_bit=64
         fi
+        mkdir -p "$os_dir/frpc/"
+        url=$(get_frpc_url windows "$nt_ver" "$os_bit")
+        download "$url" $os_dir/frpc/frpc.zip
+        # -j 去除文件夹
+        # -C 筛选文件时不区分大小写，但 busybox zip 不支持
+        unzip -o -j "$os_dir/frpc/frpc.zip" '*/frpc.exe' -d "$os_dir/frpc/"
+        rm -f "$os_dir/frpc/frpc.zip"
+        cp -f /configs/frpc.* "$os_dir/frpc/"
+        download "$confhome/windows-frpc.xml" "$os_dir/frpc/frpc.xml"
+        download "$confhome/windows-frpc.bat" "$os_dir/frpc/frpc.bat"
+        bats="$bats frpc\frpc.bat"
     fi
 
     if $use_gpo; then
@@ -3478,8 +3545,8 @@ EOF
             wget https://deb.freexian.com/extended-lts/archive-key.gpg \
                 -O $os_dir/etc/apt/trusted.gpg.d/freexian-archive-extended-lts.gpg
 
-            codename=$(grep '^VERSION_CODENAME=' $os_dir/etc/os-release | cut -d= -f2)
-            # shellcheck disable=SC2154
+            # shellcheck disable=SC1091
+            codename=$({ . "$os_dir/etc/os-release" && echo "$VERSION_CODENAME"; })
             if [ -f $os_dir/etc/apt/sources.list.d/debian.sources ]; then
                 cat <<EOF >$os_dir/etc/apt/sources.list.d/debian.sources
 Types: deb
@@ -3818,7 +3885,7 @@ setup_nocloud() {
 
     # 1. 配置 NoCloud-only datasource
     mkdir -p "$os_dir/etc/cloud/cloud.cfg.d"
-    cat > "$os_dir/etc/cloud/cloud.cfg.d/99-datasource.cfg" << 'EOF'
+    cat >"$os_dir/etc/cloud/cloud.cfg.d/99-datasource.cfg" <<'EOF'
 datasource_list: [ NoCloud, None ]
 datasource:
   NoCloud:
@@ -5666,8 +5733,8 @@ get_windows_type_from_windows_drive() {
     apk add hivex
     software_hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SOFTWARE)
     system_hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SYSTEM)
-    installation_type=$(hivexget $software_hive '\Microsoft\Windows NT\CurrentVersion' InstallationType || true)
-    product_type=$(hivexget $system_hive '\ControlSet001\Control\ProductOptions' ProductType || true)
+    installation_type=$(hivexget $software_hive '\Microsoft\Windows NT\CurrentVersion' InstallationType 2>/dev/null || true)
+    product_type=$(hivexget $system_hive '\ControlSet001\Control\ProductOptions' ProductType 2>/dev/null || true)
     apk del hivex
 
     # 根据 win11 multi-session 的情况
@@ -5731,12 +5798,24 @@ install_windows() {
 
     # 一般镜像是 install.wim
     # en_server_install_disc_windows_home_server_2011_x64_dvd_658487.iso 是 Install.wim
+    # en_windows_vista_sp2_with_update_6003.23713_aio_7in1_x64_v26.01.13_by_adguard.iso 是 swm
     source_install_wim=$(
         cd /iso
-        { find_file_ignore_case sources/install.wim ||
-            find_file_ignore_case sources/install.esd; } 2>/dev/null ||
-            error_and_exit "can't find install.wim or install.esd"
+        {
+            find_file_ignore_case sources/install.wim ||
+                find_file_ignore_case sources/install.esd ||
+                find_file_ignore_case sources/install.swm
+        } 2>/dev/null || error_and_exit "can't find install.wim, install.esd or install.swm"
     )
+
+    is_swm=false
+    if [[ $(echo "$source_install_wim" | to_lower) = '*.swm' ]]; then
+        is_swm=true
+        swm_ref=$(
+            IFS=. read -r name ext < <(basename "$source_install_wim")
+            echo "$name*.$ext"
+        )
+    fi
 
     # 防止用了不兼容架构的 iso
     boot_index=$(get_wim_prop "/iso/$sources_boot_wim" 'Boot Index')
@@ -5843,27 +5922,15 @@ install_windows() {
     # 2. 是否自带 nvme 驱动
     # 3. 是否支持 sha256
     # 4. Installation Type
-    wimmount "$iso_install_wim" "$image_index" /wim/
+    # shellcheck disable=SC2046
+    wimmount "$iso_install_wim" "$image_index" /wim/ \
+        $($is_swm && echo --ref=$(dirname "$iso_install_wim")/$swm_ref)
+
+    # 获取版本号
     get_windows_version_from_windows_drive /wim
+
+    # 检测 client/server，并转换成标准版 windows 名称
     windows_type=$(get_windows_type_from_windows_drive /wim)
-    {
-        find_file_ignore_case /wim/Windows/System32/sacsess.exe && has_sac=true || has_sac=false
-        find_file_ignore_case /wim/Windows/INF/stornvme.inf && has_stornvme=true || has_stornvme=false
-    } >/dev/null 2>&1
-    wimunmount /wim/
-
-    # https://www.hummingheads.co.jp/press/info-certificates.html
-    # https://support.microsoft.com/kb/KB3033929
-    # https://support.microsoft.com/kb/KB4474419
-    # Windows Vista SP2 ldr_escrow   6.0.6003 + KB4474419
-    # Windows 7     SP1              6.1.7601 + KB3033929
-    support_sha256=false
-    if is_nt_ver_ge 6.2 ||
-        { [ "$nt_ver" = 6.1 ] && [ "$build_ver" -ge 7601 ] && [ "$rev_ver" -ge 18741 ]; } ||
-        { [ "$nt_ver" = 6.0 ] && [ "$build_ver" -ge 6003 ] && [ "$rev_ver" -ge 20555 ]; }; then
-        support_sha256=true
-    fi
-
     product_ver=$(
         case "$windows_type" in
         client) get_client_name_by_build_ver "$build_ver" ;;
@@ -5871,16 +5938,113 @@ install_windows() {
         esac
     )
 
+    # 检测 sac 和 nvme
+    {
+        find_file_ignore_case /wim/Windows/System32/sacsess.exe && has_sac=true || has_sac=false
+        find_file_ignore_case /wim/Windows/INF/stornvme.inf && has_stornvme=true || has_stornvme=false
+    } >/dev/null 2>&1
+
+    # 检测是否支持 sha256 签名的驱动
+    support_sha256=false
+    if is_nt_ver_ge 6.2; then
+        support_sha256=true
+    else
+        # 安装环境下 drvload.exe 不会验证签名，能安装 sha256 的驱动
+        # 但重启后提示 Windows cannot verify the digital signature for this file.
+
+        # winload.exe/efi 有这串字符
+        # Windows cannot verify the digital signature for this file.
+        # strings -e l winload.exe | grep -i signature
+        # strings -e l winload.efi | grep -i signature
+
+        # 硬盘控制器驱动是 boot-start 驱动，由 winload.exe/efi 验证签名
+        # 网卡驱动不是 boot-start 驱动，由 ci.dll 验证签名
+
+        # win7 sp1 iso 不支持 sha256 的驱动，但是
+        # ci.dll      能找到 8+64 个常量和 oid 0609608648016503040201 0102040365014886600906
+        # winload.exe 能找到 8+64 个常量和 oid 0609608648016503040201 0102040365014886600906
+        # winload.efi 能找到 8+64 个常量和 oid     608648016503040201
+
+        # 官网有提到 KB3033929 和 KB4039648, 应该分别是 2008r2 和 2008 最早支持 sha256 的补丁
+        # https://support.microsoft.com/kb/4472027#:~:text=KB3033929%20%E5%92%8C%20KB4039648
+        # https://support.drweb.cn/sha2
+        # https://support.kaspersky.com/common/compatibility/15761
+        # https://www.internetdownloadmanager.com/register/new_faq/sha256-support-for-outdated-versions-of-Windows.html
+        # https://www.catalog.update.microsoft.com/
+
+        # vista sp2 iso
+        # 用 KB4039648 和 KB4090450 做测试，独立安装时，注册表没有发现另一个 KB 的痕迹
+        # 后续很多补丁如果包含 winload.exe/efi，都是支持 sha256 的新版，因此不能通过检测 KB 编号来判断
+        # HKEY_LOCAL_MACHINE\Microsoft\Windows\CurrentVersion\Component Based Servicing\Package
+        # HKEY_LOCAL_MACHINE\Microsoft\Windows\CurrentVersion\Component Based Servicing\PackageDetect
+
+        # vista sp2 iso 独立安装以下补丁时
+        # 补丁          发布日期   BuildLabEx          ubr    winload.exe   winload.efi   ci.dll
+        # KB4039648 旧  2018/2/21  6002.18005(没改变)  没有   6002.24259    6002.24283    6002.24259
+        # KB4039648 新  2018/3/22  6002.18005(没改变)  没有   6002.24259    6002.24298    6002.24259
+        # KB4039648-v2  2018/6/12  6002.24381          没有   6002.24362    6002.24381    6002.24259
+        # KB4474419-v4  2019/10/8  6003.20555          没有   6003.20505    6003.20555    6003.20593
+
+        # win7 sp1 iso 独立安装以下补丁时
+        # KB3033929     2015/3/10  7601.18741          没有   18649/22854  18741/22948    18519/22730
+        # KB4474419-v3  2019/9/10  7601.24384          没有         24149        24384          24158
+
+        # 最早的 KB4039648 KB3033929 都支持 sha256
+        # winload.exe/efi 版本号 >= ci.dll
+        # 因此用 winload.exe/efi 的版本号来判断是否支持 sha256
+
+        apk add pev
+        local maj min build rev
+        winload=$(find_file_ignore_case "/wim/Windows/System32/winload.$(is_efi && echo efi || echo exe)")
+        IFS=. read -r maj min build rev \
+            < <(peres -v "$winload" | grep 'Product Version:' | awk '{print $NF}')
+        apk del pev
+
+        # vista/2008
+        # https://support.microsoft.com/kb/KB4039648
+        # https://catalog.update.microsoft.com/Search.aspx?q=KB4039648
+
+        # win7/2008r2 网页有列出文件版本号
+        # https://support.microsoft.com/kb/KB3033929
+        # https://catalog.update.microsoft.com/Search.aspx?q=KB3033929
+
+        # rev 1xxxx 是 GDR 分支
+        # rev 2xxxx 是 LDR 分支
+
+        # vista/2008 版本从 6002 到 6003, rev 减少 4000
+        # https://support.microsoft.com/topic/1335e4d4-c155-52eb-4a45-b85bd1909ca8
+
+        if is_efi; then
+            if { [ "$maj.$min" = 6.1 ] && [ "$build" -eq 7601 ] && [ "$rev" -ge 22948 ]; } ||
+                { [ "$maj.$min" = 6.1 ] && [ "$build" -eq 7601 ] && [ "$rev" -ge 18741 ] && [ "$rev" -lt 20000 ]; } ||
+                { [ "$maj.$min" = 6.0 ] && [ "$build" -eq 6003 ] && [ "$rev" -ge 20283 ]; } ||
+                { [ "$maj.$min" = 6.0 ] && [ "$build" -eq 6002 ] && [ "$rev" -ge 24283 ]; }; then
+                support_sha256=true
+            fi
+        else
+            if { [ "$maj.$min" = 6.1 ] && [ "$build" -eq 7601 ] && [ "$rev" -ge 22854 ]; } ||
+                { [ "$maj.$min" = 6.1 ] && [ "$build" -eq 7601 ] && [ "$rev" -ge 18649 ] && [ "$rev" -lt 20000 ]; } ||
+                { [ "$maj.$min" = 6.0 ] && [ "$build" -eq 6003 ] && [ "$rev" -ge 20259 ]; } ||
+                { [ "$maj.$min" = 6.0 ] && [ "$build" -eq 6002 ] && [ "$rev" -ge 24259 ]; }; then
+                support_sha256=true
+            fi
+        fi
+    fi
+
+    wimunmount /wim/
+
     info "Selected image info"
     echo "Image Name: $image_name"
     echo "Product Version: $product_ver"
     echo "Windows Type: $windows_type"
     echo "NT Version: $nt_ver"
     echo "Build Version: $build_ver"
+    echo "Revision Version: $rev_ver"
     echo "-------------------------"
     echo "Has SAC: $has_sac"
     echo "Has StorNVMe: $has_stornvme"
     echo "Support SHA256: $support_sha256"
+    echo "-------------------------"
     echo
 
     # 复制 boot.wim 到 /os，用于临时编辑
@@ -5916,6 +6080,7 @@ install_windows() {
             --exclude=/sources/boot.wim \
             --exclude=/sources/install.wim \
             --exclude=/sources/install.esd \
+            --exclude='/sources/install*.swm' \
             /iso/* /os/installer/
     else
         (
@@ -5924,16 +6089,27 @@ install_windows() {
                 -not -iname boot.wim \
                 -not -iname install.wim \
                 -not -iname install.esd \
+                -not -iname 'install*.swm' \
                 -exec cp -r --parents {} /os/installer/ \;
         )
     fi
 
-    # 优化 install.wim
-    # 优点: 可以节省 200M~600M 空间，用来创建虚拟内存
-    #       （意义不大，因为已经删除了 boot.wim 用来创建虚拟内存，vista 除外）
-    # 缺点: 如果 install.wim 只有一个镜像，则只能缩小 10M+
-    if false; then
+    # 如果是 swm，要先合并成 wim 才能编辑
+    if $is_swm; then
+        install_wim=$(echo "$install_wim" | sed 's/\.swm$/.wim/i')
+        # 防止不格盘二次运行时报错：文件已存在
+        rm -f "$install_wim"
+        wimexport --ref="$(dirname "$iso_install_wim")/$swm_ref" "$iso_install_wim" "$image_index" "$install_wim"
+        # 只导出了要安装的镜像，因此 image_index 变为 1
+        image_index=1
+    elif false; then
+        # 优化 install.wim
+        # 优点: 可以节省 200M~600M 空间，用来创建虚拟内存
+        #       （意义不大，因为已经删除了 boot.wim 用来创建虚拟内存，vista 除外）
+        # 缺点: 如果 install.wim 只有一个镜像，则只能缩小 10M+
         time wimexport --threads "$(get_build_threads 512)" "$iso_install_wim" "$image_index" "$install_wim"
+        # 只导出了要安装的镜像，因此 image_index 变为 1
+        image_index=1
         info "install.wim size"
         echo "Original:  $(get_filesize_mb "$iso_install_wim")"
         echo "Optimized: $(get_filesize_mb "$install_wim")"
@@ -6723,36 +6899,48 @@ EOF
 
     add_driver_vmd() {
         # RST v20 不支持 11代 PCI\VEN_8086&DEV_9A0B
-        is_gen11=false
+        support_v19=false
+        support_v20=false
         for d in /sys/bus/pci/devices/*; do
             vendor=$(cat "$d/vendor" 2>/dev/null)
             device=$(cat "$d/device" 2>/dev/null)
-            if [ "$vendor" = "0x8086" ] && [ "$device" = "0x9a0b" ]; then
-                is_gen11=true
-                break
+            if [ "$vendor" = "0x8086" ]; then
+                case "$device" in
+                "0x9a0b") support_v19=true && support_v20=false && break ;;
+                "0x467f") support_v19=true && support_v20=true && break ;;
+                "0xa77f") support_v19=true && support_v20=true && break ;;
+                "0x7d0b") support_v19=false && support_v20=true && break ;;
+                "0xad0b") support_v19=false && support_v20=true && break ;;
+                esac
             fi
         done
 
-        if ! $is_gen11 && [ "$build_ver" -ge 19041 ]; then
-            # RST v20
-            local page=https://www.intel.com/content/www/us/en/download/849936.html
-        elif [ "$build_ver" -ge 15063 ]; then
-            # RST v19
-            local page=https://www.intel.com/content/www/us/en/download/849933.html
-        else
-            error_and_exit "can't find suitable vmd driver"
+        local page=
+        if $support_v20 && [ "$build_ver" -ge 19041 ]; then
+            page=https://www.intel.com/content/www/us/en/download/849936.html
+        elif $support_v19 && [ "$build_ver" -ge 15063 ]; then
+            page=https://www.intel.com/content/www/us/en/download/849933.html
         fi
-        local url
-        url=$(wget -U curl/7.54.1 "$page" -O- |
-            grep -Eio -m1 "\"https://.+/SetupRST\.exe\"" | tr -d '"' | grep .)
 
-        # 注意 intel 禁止了 aria2 下载
-        download $url $drv/SetupRST.exe
-        apk add 7zip
-        7z x $drv/SetupRST.exe -o$drv/SetupRST -i!.text
-        7z x $drv/SetupRST/.text -o$drv/vmd
-        apk del 7zip
-        cp_drivers $drv/vmd
+        if [ -n "$page" ]; then
+            # intel 禁止了 wget 下载网页
+            local url
+            url=$(wget -U curl/7.54.1 "$page" -O- |
+                grep -Eio -m1 "\"https://.+/SetupRST\.exe\"" | tr -d '"' | grep .)
+
+            # 注意 intel 禁止了 aria2 下载
+            download $url $drv/SetupRST.exe
+            apk add 7zip
+            7z x $drv/SetupRST.exe -o$drv/SetupRST -i!.text
+            7z x $drv/SetupRST/.text -o$drv/vmd
+            apk del 7zip
+            cp_drivers $drv/vmd
+        else
+            # 如果开启了 vmd 但硬盘不在 vmd 上，linux 会自动加载 vmd 模块?
+            # 还要判断主硬盘是否在 vmd 上，如果不在，即使没有 vmd 驱动也可继续安装
+            # 因此目前先不中止脚本
+            : error_and_exit "can't find suitable vmd driver"
+        fi
     }
 
     # 脚本自动检测驱动可能有问题
@@ -6949,6 +7137,8 @@ EOF
         images=all
     fi
     mkdir -p "$(get_path_in_correct_case "$(dirname $boot_dir/$sources_boot_wim)")"
+    # 防止不格盘二次运行时报错：文件已存在
+    rm -f $boot_dir/$sources_boot_wim
     wimexport --boot /os/boot.wim "$images" $boot_dir/$sources_boot_wim
     info "boot.wim size"
     echo "Original:      $(get_filesize_mb /iso/$sources_boot_wim)"
@@ -7396,12 +7586,12 @@ fi
 
 # 设置 frpc
 # 并防止重复运行
-if [ -s /configs/frpc.toml ] && ! pidof frpc >/dev/null; then
+if ls /configs/frpc.* >/dev/null 2>&1 && ! pidof frpc >/dev/null; then
     info 'run frpc'
     add_community_repo
     apk add frp
     while true; do
-        frpc -c /configs/frpc.toml || true
+        frpc -c /configs/frpc.* || true
         sleep 5
     done &
 fi

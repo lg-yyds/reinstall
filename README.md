@@ -38,6 +38,7 @@
 - [功能 3. 一键引导到 Alpine Live OS 内存系统](#功能-3-重启到--alpine-live-os内存系统)
 - [功能 4. 一键引导到 netboot.xyz](#功能-4-重启到--netbootxyz)
 - [功能 5. 一键重装到 Windows](#功能-5-安装--windows-iso)
+- [取消重装](#取消重装)
 
 ## 系统要求
 
@@ -144,7 +145,7 @@ certutil -urlcache -f -split https://cnb.cool/bin456789/reinstall/-/git/raw/main
 >
 > 此功能会清除当前系统**整个硬盘**的全部数据（包含其它分区）！
 >
-> 数据无价，请三思而后行！
+> 如果不小心运行了脚本，可以在重启前运行 `bash reinstall.sh reset` 取消重装
 
 - 用户名为 `root`，脚本会提示输入密码，不输入则使用随机密码
 - 安装最新版可不输入版本号
@@ -181,7 +182,7 @@ bash reinstall.sh anolis      7|8|23
 - `--ssh-key KEY` 设置 SSH 登录公钥，[格式如下](#--ssh-key)。当使用公钥时，密码为空
 - `--ssh-port PORT` 修改 SSH 端口（安装期间观察日志用，也作用于新系统）
 - `--web-port PORT` 修改 Web 端口（安装期间观察日志用）
-- `--frpc-toml PATH` 添加 frpc 内网穿透，参数填本地路径或 HTTP 链接
+- `--frpc-config PATH` 添加 frpc 内网穿透，参数填配置文件的本地路径或 HTTP 链接
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性
 - `--hold 2` 安装结束后不重启，用于 SSH 登录修改系统内容，Debian/Kali 会挂载在 `/target`，其它系统会挂载在 `/os`
 
@@ -231,7 +232,7 @@ bash reinstall.sh ubuntu --installer
 >
 > 此功能会清除当前系统**整个硬盘**的全部数据（包含其它分区）！
 >
-> 数据无价，请三思而后行！
+> 如果不小心运行了脚本，可以在重启前运行 `bash reinstall.sh reset` 取消重装
 
 - 支持 `raw` 和固定大小的 `vhd` 镜像。未压缩或者压缩成 `.gz` `.xz` `.zst` `.tar` `.tar.gz` `.tar.xz` `.tar.zst`
 - DD Windows 镜像时，会自动扩展系统盘，静态 IP 的机器会配置好 IP，可能首次开机几分钟后才生效
@@ -247,7 +248,7 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 - `--rdp-port PORT` 修改 RDP 端口 (仅限 DD Windows)
 - `--ssh-port PORT` 修改 SSH 端口（安装期间观察日志用）
 - `--web-port PORT` 修改 Web 端口（安装期间观察日志用）
-- `--frpc-toml PATH` 添加 frpc 内网穿透（仅限 DD Windows），参数填本地路径或 HTTP 链接
+- `--frpc-config PATH` 添加 frpc 内网穿透（仅限 DD Windows），参数填配置文件的本地路径或 HTTP 链接
 - `--cloud-data PATH_OR_URL` 为 DD Linux 镜像注入 cloud-init NoCloud 配置（仅限 DD Linux）
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性
 - `--hold 2` DD 结束后不重启，用于 SSH 登录修改系统内容，Windows 系统会挂载在 `/os`，Linux 系统**不会**自动挂载
@@ -298,7 +299,7 @@ bash reinstall.sh alpine --hold 1
 - `--password PASSWORD` 设置密码
 - `--ssh-port PORT` 修改 SSH 端口
 - `--ssh-key KEY` 设置 SSH 登录公钥，[格式如下](#--ssh-key)。当使用公钥时，密码为空
-- `--frpc-toml PATH` 添加 frpc 内网穿透，参数填本地路径或 HTTP 链接
+- `--frpc-config PATH` 添加 frpc 内网穿透，参数填配置文件的本地路径或 HTTP 链接
 
 ### 功能 4: 重启到 <img width="16" height="16" src="https://netboot.xyz/img/favicon.ico" /> netboot.xyz
 
@@ -324,7 +325,7 @@ bash reinstall.sh netboot.xyz
 >
 > 此功能会清除当前系统**整个硬盘**的全部数据（包含其它分区）！
 >
-> 数据无价，请三思而后行！
+> 如果不小心运行了脚本，可以在重启前运行 `bash reinstall.sh reset` 取消重装
 
 - 用户名为 `administrator`，脚本会提示输入密码，不输入则使用随机密码
 - 如果远程登录失败，可以尝试使用用户名 `.\administrator`
@@ -453,7 +454,7 @@ bash reinstall.sh windows \
 - `--add-driver INF_OR_DIR` 添加额外驱动，填写 .inf 路径，或者 .inf 所在的文件夹
   - 需先下载驱动到当前系统
   - 可多次设置该参数以添加不同的驱动
-- `--frpc-toml PATH` 添加 frpc 内网穿透，参数填本地路径或 HTTP 链接
+- `--frpc-config PATH` 添加 frpc 内网穿透，参数填配置文件的本地路径或 HTTP 链接
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性
 - `--hold 2` 用于在进入 Windows 官方安装程序之前，SSH 登录修改 `boot.wim`、`install.wim` 或者其它内容，硬盘挂载在 `/os`
 
@@ -464,7 +465,7 @@ bash reinstall.sh windows \
 - AWS ([ENA 网卡][aws-ena], [NVME 存储控制器][aws-nvme])
 - GCP ([gVNIC 网卡][gcp-gvnic], [GGA 显卡][gcp-gga])
 - Azure ([MANA 网卡][azure-mana])
-- Intel ([VMD 存储控制器][intel-vmd], 网卡: [7][intel-nic-7], [8][intel-nic-8], [8.1][intel-nic-8.1], [10][intel-nic-10], [11][intel-nic-11], [2008 R2][intel-nic-2008-r2], [2012][intel-nic-2012], [2012 R2][intel-nic-2012-r2], [2016][intel-nic-2016], [2019][intel-nic-2019], [2022][intel-nic-2022], [2025][intel-nic-2025])
+- Intel (VMD 存储控制器: [11代酷睿][intel-vmd-gen11], [12-15代酷睿][intel-vmd-gen12-to-gen15], 网卡: [7][intel-nic-7], [8.x][intel-nic-8.1], [10][intel-nic-10], [11][intel-nic-11], [2008 R2][intel-nic-7], [2012][intel-nic-2012], [2012 R2][intel-nic-2012-r2], [2016][intel-nic-2016], [2019][intel-nic-2019], [2022][intel-nic-2022], [2025][intel-nic-2025])
 
 [virtio-virtio]: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/
 [virtio-aliyun]: https://www.alibabacloud.com/help/ecs/user-guide/install-the-virtio-driver-1
@@ -478,13 +479,12 @@ bash reinstall.sh windows \
 [gcp-gvnic]: https://cloud.google.com/compute/docs/networking/using-gvnic
 [gcp-gga]: https://cloud.google.com/compute/docs/instances/enable-instance-virtual-display
 [azure-mana]: https://learn.microsoft.com/azure/virtual-network/accelerated-networking-mana-windows
-[intel-vmd]: https://www.intel.com/content/www/us/en/download/849936/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-15th-gen-platforms.html
+[intel-vmd-gen11]: https://www.intel.com/content/www/us/en/download/849933/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-13th-gen-platforms.html
+[intel-vmd-gen12-to-gen15]: https://www.intel.com/content/www/us/en/download/849936/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-15th-gen-platforms.html
 [intel-nic-7]: https://www.intel.com/content/www/us/en/download/15590/intel-network-adapter-driver-for-windows-7-final-release.html
-[intel-nic-8]: https://web.archive.org/web/20250501043104/https://www.intel.com/content/www/us/en/download/16765/intel-network-adapter-driver-for-windows-8-final-release.html
 [intel-nic-8.1]: https://www.intel.com/content/www/us/en/download/17479/intel-network-adapter-driver-for-windows-8-1.html
 [intel-nic-10]: https://www.intel.com/content/www/us/en/download/18293/intel-network-adapter-driver-for-windows-10.html
 [intel-nic-11]: https://www.intel.com/content/www/us/en/download/727998/intel-network-adapter-driver-for-microsoft-windows-11.html
-[intel-nic-2008-r2]: https://web.archive.org/web/20250501002542/https://www.intel.com/content/www/us/en/download/15591/intel-network-adapter-driver-for-windows-server-2008-r2-final-release.html
 [intel-nic-2012]: https://www.intel.com/content/www/us/en/download/16789/intel-network-adapter-driver-for-windows-server-2012.html
 [intel-nic-2012-r2]: https://www.intel.com/content/www/us/en/download/17480/intel-network-adapter-driver-for-windows-server-2012-r2.html
 [intel-nic-2016]: https://www.intel.com/content/www/us/en/download/18737/intel-network-adapter-driver-for-windows-server-2016.html
@@ -546,28 +546,24 @@ Windows Server 2025 SERVERDATACENTER
 
 安装过程可能会黑屏，串行控制台可能会显示 `ConvertPages: failed to find range`，均不影响正常安装
 
-| 兼容性 | 云服务商 | 实例类型      | 问题                                                                         |
-| ------ | -------- | ------------- | ---------------------------------------------------------------------------- |
-| ✔️     | Azure    | B2pts_v2      |                                                                              |
-| ✔️     | 阿里云   | g6r, c6r      |                                                                              |
-| ✔️     | 阿里云   | g8y, c8y, r8y | 有几率重启时卡开机 Logo，强制重启即可                                        |
-| ✔️     | AWS      | T4g           |                                                                              |
-| ✔️     | Scaleway | COPARM1       |                                                                              |
-| ✔️     | Gcore    |               |                                                                              |
-| ❔     | 甲骨文云 | A1.Flex       | 不一定能安装成功，越新创建的实例越容易成功<br />安装后还需要手动加载显卡驱动 |
-| ❌     | 谷歌云   | t2a           | 缺少网卡驱动                                                                 |
+| 兼容性 | 云服务商 | 实例类型                | 问题                                       |
+| ------ | -------- | ----------------------- | ------------------------------------------ |
+| ✔️     | Azure    | B2pts_v2                |                                            |
+| ✔️     | AWS      | T4g                     |                                            |
+| ✔️     | Scaleway | COPARM1                 |                                            |
+| ✔️     | Gcore    |                         |                                            |
+| ❔     | 阿里云   | g6r, c6r, g8y, c8y, r8y | 有几率重启时卡开机 Logo，强制重启即可      |
+| ❔     | 甲骨文云 | A1.Flex                 | 不一定能安装成功，越新创建的实例越容易成功 |
+| ❌     | 谷歌云   | t2a                     | 缺少网卡驱动                               |
 
-<details>
+### 取消重装
 
-<summary>甲骨文云加载显卡驱动</summary>
+- 如果不小心运行了脚本，可以运行以下命令取消重装
+- 需要在重启前运行
 
-使用远程桌面登录到服务器，打开设备管理器，找到显卡，选择更新驱动，在列表中选择 `Red Hat VirtIO GPU DOD controller` 即可。不需要提前下载驱动。
-
-![virtio-gpu-1](https://github.com/user-attachments/assets/503e1d82-4fa9-4486-917e-73326ad7c988)
-![virtio-gpu-2](https://github.com/user-attachments/assets/bf3a9af6-13d8-4f93-9d6c-d3b2dbddb37d)
-![virtio-gpu-3](https://github.com/user-attachments/assets/a9006a78-838f-45bf-a556-2dba193d3c03)
-
-</details>
+```bash
+bash reinstall.sh reset
+```
 
 ## 参数格式
 

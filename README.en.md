@@ -38,6 +38,7 @@ If this helped you, you can buy me a milk tea.
 - [Feature 3. One-click reboot to Alpine Live OS](#feature-3-reboot-to--alpine-live-os)
 - [Feature 4. One-click reboot to netboot.xyz](#feature-4-reboot-to--netbootxyz)
 - [Feature 5. One-click reinstallation to Windows](#feature-5-install--windows-iso)
+- [Cancel the reinstallation](#cancel-the-reinstallation)
 
 ## System Requirements
 
@@ -144,7 +145,7 @@ certutil -urlcache -f -split https://cnb.cool/bin456789/reinstall/-/git/raw/main
 >
 > This feature will erase **the entire hard disk** of the current system (including other partitions)!
 >
-> Data is priceless — please think twice before proceeding!
+> If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
 
 - Username `root`. The script prompts for a password. If left blank, a random one is generated.
 - When installing the latest version, the version number does not need to be specified.
@@ -181,7 +182,7 @@ bash reinstall.sh anolis      7|8|23
 - `--ssh-key KEY` Set up SSH login public key, [formatted as follows](#--ssh-key). When using public key, password is empty.
 - `--ssh-port PORT` Change the SSH port (for log observation during installation and for the new system)
 - `--web-port PORT` Change the Web port (for log observation during installation only)
-- `--frpc-toml PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL
+- `--frpc-config PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL of the configuration file.
 - `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
 - `--hold 2` Prevent reboot after installation completes, allowing SSH login to modify system content; the system is mounted at `/target` for Debian/Kali and `/os` for other distros.
 
@@ -231,7 +232,7 @@ bash reinstall.sh ubuntu --installer
 >
 > This feature will erase **the entire hard disk** of the current system (including other partitions)!
 >
-> Data is priceless — please think twice before proceeding!
+> If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
 
 - Supports `raw` and fixed-size `vhd` image formats. Either uncompressed or compressed as `.gz`, `.xz`, `.zst`, `.tar`, `.tar.gz`, `.tar.xz`, `.tar.zst`.
 - When deploy a Windows image, the system disk will be automatically expanded, and machines with a static IP will have their IP configured, and may take a few minutes after the first boot for the configuration to take effect.
@@ -247,7 +248,7 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 - `--rdp-port PORT` Change RDP port (DD Windows only)
 - `--ssh-port PORT` Change SSH port (for log observation during installation)
 - `--web-port PORT` Change Web port (for log observation during installation)
-- `--frpc-toml PATH` Add frpc for intranet tunneling (DD Windows only). Parameter can be local filepath or HTTP URL
+- `--frpc-config PATH` Add frpc for intranet tunneling (DD Windows only). Parameter can be local filepath or HTTP URL of the configuration file.
 - `--cloud-data PATH_OR_URL` Inject cloud-init NoCloud configuration into the DD'd Linux image (DD Linux only)
 - `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
 - `--hold 2` Prevent reboot after the DD process finishes. For SSH login to modify system content. The Windows system will be mounted at `/os`, but Linux systems will **NOT** be automatically mounted.
@@ -298,7 +299,7 @@ bash reinstall.sh alpine --hold 1
 - `--password PASSWORD` Set password
 - `--ssh-port PORT` Change SSH port
 - `--ssh-key KEY` Set up SSH login public key, [formatted as follows](#--ssh-key). When using public key, password is empty.
-- `--frpc-toml PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL
+- `--frpc-config PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL of the configuration file.
 
 ### Feature 4: Reboot to <img width="16" height="16" src="https://netboot.xyz/img/favicon.ico" /> netboot.xyz
 
@@ -324,7 +325,7 @@ bash reinstall.sh netboot.xyz
 >
 > This feature will erase **the entire hard disk** of the current system (including other partitions)!
 >
-> Data is priceless — please think twice before proceeding!
+> If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
 
 - Username `administrator`. The script prompts for a password. If left blank, a random one is generated.
 - If remote login fails, try using the username `.\administrator`.
@@ -453,7 +454,7 @@ bash reinstall.sh windows \
 - `--add-driver INF_OR_DIR` Add additional driver, specifying .inf path, or the folder contains .inf file.
   - The driver must be downloaded to current system first.
   - This parameter can be set multiple times to add different driver.
-- `--frpc-toml PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL
+- `--frpc-config PATH` Add frpc for intranet tunneling. Parameter can be local filepath or HTTP URL of the configuration file.
 - `--hold 1` Reboot only into install environment, without running installer, only for SSH connect to test network connection.
 - `--hold 2` Allow SSH connections for modifying `boot.wim`, `install.wim` or other contents before rebooting into the official Windows installation program, with the disk mounted at `/os`.
 
@@ -464,7 +465,7 @@ bash reinstall.sh windows \
 - AWS ([ENA Network Adapter][aws-ena], [NVME Storage Controller][aws-nvme])
 - GCP ([gVNIC Network Adapter][gcp-gvnic], [GGA Display Adapter][gcp-gga])
 - Azure ([MANA Network Adapter][azure-mana])
-- Intel ([VMD Storage Controller][intel-vmd], Network Adapter: [7][intel-nic-7], [8][intel-nic-8], [8.1][intel-nic-8.1], [10][intel-nic-10], [11][intel-nic-11], [2008 R2][intel-nic-2008-r2], [2012][intel-nic-2012], [2012 R2][intel-nic-2012-r2], [2016][intel-nic-2016], [2019][intel-nic-2019], [2022][intel-nic-2022], [2025][intel-nic-2025])
+- Intel (VMD Storage Controller: [11th Gen Core][intel-vmd-gen11], [12th-15th Gen Core][intel-vmd-gen12-to-gen15], Network Adapter: [7][intel-nic-7], [8.x][intel-nic-8.1], [10][intel-nic-10], [11][intel-nic-11], [2008 R2][intel-nic-7], [2012][intel-nic-2012], [2012 R2][intel-nic-2012-r2], [2016][intel-nic-2016], [2019][intel-nic-2019], [2022][intel-nic-2022], [2025][intel-nic-2025])
 
 [virtio-virtio]: https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/
 [virtio-aliyun]: https://www.alibabacloud.com/help/ecs/user-guide/install-the-virtio-driver-1
@@ -478,13 +479,12 @@ bash reinstall.sh windows \
 [gcp-gvnic]: https://cloud.google.com/compute/docs/networking/using-gvnic
 [gcp-gga]: https://cloud.google.com/compute/docs/instances/enable-instance-virtual-display
 [azure-mana]: https://learn.microsoft.com/azure/virtual-network/accelerated-networking-mana-windows
-[intel-vmd]: https://www.intel.com/content/www/us/en/download/849936/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-15th-gen-platforms.html
+[intel-vmd-gen11]: https://www.intel.com/content/www/us/en/download/849933/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-13th-gen-platforms.html
+[intel-vmd-gen12-to-gen15]: https://www.intel.com/content/www/us/en/download/849936/intel-rapid-storage-technology-driver-installation-software-with-intel-optane-memory-12th-to-15th-gen-platforms.html
 [intel-nic-7]: https://www.intel.com/content/www/us/en/download/15590/intel-network-adapter-driver-for-windows-7-final-release.html
-[intel-nic-8]: https://web.archive.org/web/20250501043104/https://www.intel.com/content/www/us/en/download/16765/intel-network-adapter-driver-for-windows-8-final-release.html
 [intel-nic-8.1]: https://www.intel.com/content/www/us/en/download/17479/intel-network-adapter-driver-for-windows-8-1.html
 [intel-nic-10]: https://www.intel.com/content/www/us/en/download/18293/intel-network-adapter-driver-for-windows-10.html
 [intel-nic-11]: https://www.intel.com/content/www/us/en/download/727998/intel-network-adapter-driver-for-microsoft-windows-11.html
-[intel-nic-2008-r2]: https://web.archive.org/web/20250501002542/https://www.intel.com/content/www/us/en/download/15591/intel-network-adapter-driver-for-windows-server-2008-r2-final-release.html
 [intel-nic-2012]: https://www.intel.com/content/www/us/en/download/16789/intel-network-adapter-driver-for-windows-server-2012.html
 [intel-nic-2012-r2]: https://www.intel.com/content/www/us/en/download/17480/intel-network-adapter-driver-for-windows-server-2012-r2.html
 [intel-nic-2016]: https://www.intel.com/content/www/us/en/download/18737/intel-network-adapter-driver-for-windows-server-2016.html
@@ -546,28 +546,24 @@ Most ARM machines support installing latest Windows 11.
 
 During the installation process, you might encounter a black screen, and the serial console may display `ConvertPages: failed to find range`, but neither issue affects the installation.
 
-| Compatibility | Cloud Provider | Instance Type | Issues                                                                                                                                                 |
-| ------------- | -------------- | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| ✔️            | Azure          | B2pts_v2      |                                                                                                                                                        |
-| ✔️            | Alibaba Cloud  | g6r, c6r      |                                                                                                                                                        |
-| ✔️            | Alibaba Cloud  | g8y, c8y, r8y | There is a chance of hanging at the boot logo during restart; forced reboot will resolve it.                                                           |
-| ✔️            | AWS            | T4g           |                                                                                                                                                        |
-| ✔️            | Scaleway       | COPARM1       |                                                                                                                                                        |
-| ✔️            | Gcore          |               |                                                                                                                                                        |
-| ❔            | Oracle Cloud   | A1.Flex       | Installation success is not guaranteed; newer instances are more likely to succeed.<br />Manual loading of GPU drivers is required after installation. |
-| ❌            | Google Cloud   | t2a           | Missing network card drivers                                                                                                                           |
+| Compatibility | Cloud Provider | Instance Type           | Issues                                                                              |
+| ------------- | -------------- | ----------------------- | ----------------------------------------------------------------------------------- |
+| ✔️            | Azure          | B2pts_v2                |                                                                                     |
+| ✔️            | AWS            | T4g                     |                                                                                     |
+| ✔️            | Scaleway       | COPARM1                 |                                                                                     |
+| ✔️            | Gcore          |                         |                                                                                     |
+| ❔            | Alibaba Cloud  | g6r, c6r, g8y, c8y, r8y | Might hanging at the boot logo during restart; forced reboot will resolve it.       |
+| ❔            | Oracle Cloud   | A1.Flex                 | Installation success is not guaranteed; newer instances are more likely to succeed. |
+| ❌            | Google Cloud   | t2a                     | Missing network card drivers                                                        |
 
-<details>
+### Cancel the reinstallation
 
-<summary>Loading Graphics Driver on Oracle Cloud</summary>
+- If the script was run by mistake, you can run this command to cancel the reinstallation operation.
+- Must be run before rebooting.
 
-Log in to the server using Remote Desktop, open Device Manager, locate the graphics card, select "Update Driver," and choose `Red Hat VirtIO GPU DOD controller` from the list. There's no need to download the drivers in advance.
-
-![virtio-gpu-1](https://github.com/user-attachments/assets/503e1d82-4fa9-4486-917e-73326ad7c988)
-![virtio-gpu-2](https://github.com/user-attachments/assets/bf3a9af6-13d8-4f93-9d6c-d3b2dbddb37d)
-![virtio-gpu-3](https://github.com/user-attachments/assets/a9006a78-838f-45bf-a556-2dba193d3c03)
-
-</details>
+```bash
+bash reinstall.sh reset
+```
 
 ## Parameter Format
 
