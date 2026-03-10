@@ -486,10 +486,11 @@ fix_file_type() {
         -e 's/[,;#]//g' \
         -e 's/^[[:space:]]*//' \
         -e 's/(POSIX|Unicode|UTF-8|ASCII)//gi' \
-        -e 's/DOS\/MBR boot sector/raw/i' \
-        -e 's/x86 boot sector/raw/i' \
-        -e 's/Zstandard/zstd/i' \
-        -e 's/Windows imaging \(WIM\) image/wim/i' |
+        -e 's/^DOS\/MBR boot sector/raw/i' \
+        -e 's/^x86 boot sector/raw/i' \
+        -e 's/^Zstandard/zstd/i' \
+        -e 's/^UDF/iso/i' \
+        -e 's/^Windows imaging \(WIM\) image/wim/i' |
         awk '{print $1}' | to_lower
 }
 
@@ -1686,18 +1687,20 @@ Continue with DD?
             fi
         done
 
-        # 对于同一行有多个成功匹配，grep -m1 无效
-        iso=$(curl -L "https://fnnas.com/download$([ "$basearch" = aarch64 ] && echo -arm)" |
-            grep -o 'https://[^"]*\.iso' | head -1 | grep .)
+        if [ -z "$iso" ]; then
+            # 对于同一行有多个成功匹配，grep -m1 无效
+            iso=$(curl -L "https://fnnas.com/download$([ "$basearch" = aarch64 ] && echo -arm)" |
+                grep -o 'https://[^"]*\.iso' | head -1 | grep .)
 
-        # curl 7.82.0+
-        # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
+            # curl 7.82.0+
+            # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
 
-        iso=$(curl -L \
-            -d '{"url":"'$iso'"}' \
-            -H 'Content-Type: application/json' \
-            https://www.fnnas.com/api/download-sign |
-            grep -o 'https://[^"]*')
+            iso=$(curl -L \
+                -d '{"url":"'$iso'"}' \
+                -H 'Content-Type: application/json' \
+                https://www.fnnas.com/api/download-sign |
+                grep -o 'https://[^"]*')
+        fi
 
         test_url "$iso" iso
         eval "${step}_iso='$iso'"
@@ -4226,7 +4229,7 @@ remove_exist_reinstall() {
 
             # 删除 reinstall 条目
             if [ -f "$target_cfg" ]; then
-                sed -i "/^$BOOT_ENTEY_START_MARK/,/^$BOOT_ENTEY_END_MARK/d}" "$target_cfg"
+                sed -i "/^$BOOT_ENTEY_START_MARK/,/^$BOOT_ENTEY_END_MARK/d" "$target_cfg"
             fi
 
             # 清除 next entry
