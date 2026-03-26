@@ -1263,6 +1263,13 @@ networking = {
 EOF
 
     for ethx in $(get_eths); do
+        # ipv4 使用 DHCP 时显式开启 useDHCP
+        if is_dhcpv4; then
+            cat <<EOF >>$conf_file
+  interfaces.$ethx.useDHCP = true;
+EOF
+        fi
+
         # ipv4
         if is_staticv4; then
             get_netconf_to ipv4_addr
@@ -2661,6 +2668,11 @@ create_part() {
             FNOS_OS_PART_END_M=$expect_m
         fi
 
+        # fnos 的 grub 是 debian 11 的
+        # 需关闭 metadata_csum_seed，否则 grub 会进入 grub rescue 模式，但 efi 下一切正常
+        # orphan_file 不需要关，但是官方安装器安装的系统分区没有这个特性，因此我们也关闭它
+        ext4_opts="-O ^metadata_csum_seed,^orphan_file"
+
         if is_efi; then
             parted /dev/$xda -s -- \
                 mklabel gpt \
@@ -2669,8 +2681,8 @@ create_part() {
                 set 1 esp on
             update_part
 
-            mkfs.fat "/dev/$(xda 1)"     #1 efi
-            mkfs.ext4 -F "/dev/$(xda 2)" #2 os + installer
+            mkfs.fat "/dev/$(xda 1)"                #1 efi
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
         elif is_xda_gt_2t; then
             # bios > 2t
             # 官方安装器是 mkpart BOOT 1M 100M，无论 esp 或者 bios_grub 都用这个分区和大小
@@ -2681,8 +2693,8 @@ create_part() {
                 set 1 bios_grub on
             update_part
 
-            echo                         #1 bios_boot
-            mkfs.ext4 -F "/dev/$(xda 2)" #2 os + installer
+            echo                                    #1 bios_boot
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
         else
             # bios
             parted /dev/$xda -s -- \
@@ -2692,8 +2704,8 @@ create_part() {
                 set 2 boot on
             update_part
 
-            echo                         #1 官方安装有这个分区
-            mkfs.ext4 -F "/dev/$(xda 2)" #2 os + installer
+            echo                                    #1 官方安装有这个分区
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
         fi
     elif is_use_cloud_image; then
         installer_part_size="$(get_cloud_image_part_size)"
