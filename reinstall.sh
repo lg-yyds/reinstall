@@ -531,19 +531,22 @@ file_enhanced() {
     echo "$full_type" | sed 's/\.$//'
 }
 
+# trans.sh 有相同方法
 add_community_repo_for_alpine() {
-    local alpine_ver
+    local ver mirror
 
-    # 先检查原来的repo是不是egde
-    if grep -q '^http.*/edge/main$' /etc/apk/repositories; then
-        alpine_ver=edge
+    # 先检查原来的 repo 是不是 edge 或者 latest-stable
+    if grep -q "^http.*/edge/main$" /etc/apk/repositories; then
+        ver=edge
+    elif grep -q "^http.*/latest-stable/main$" /etc/apk/repositories; then
+        ver=latest-stable
     else
-        alpine_ver=v$(cut -d. -f1,2 </etc/alpine-release)
+        ver=v$(cut -d. -f1,2 </etc/alpine-release)
     fi
 
-    if ! grep -q "^http.*/$alpine_ver/community$" /etc/apk/repositories; then
+    if ! grep -q "^http.*/$ver/community$" /etc/apk/repositories; then
         mirror=$(grep '^http.*/main$' /etc/apk/repositories | sed 's,/[^/]*/main$,,' | head -1)
-        echo $mirror/$alpine_ver/community >>/etc/apk/repositories
+        echo $mirror/$ver/community >>/etc/apk/repositories
     fi
 }
 
@@ -640,13 +643,12 @@ wmic() {
         curl -Lo "$tmp/wmic.ps1" "$confhome/wmic.ps1"
     fi
 
-    # shellcheck disable=SC2046
     powershell -NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass \
         -File "$(cygpath -w "$tmp/wmic.ps1")" \
         -Namespace "$namespace" \
         -Class "$class" \
-        $([ -n "$filter" ] && echo -Filter "$filter") \
-        $([ -n "$props" ] && echo -Properties "$props")
+        ${filter:+"-Filter"} ${filter:+"$filter"} \
+        ${props:+"-Properties"} ${props:+"$props"}
 }
 
 is_virt() {
@@ -698,12 +700,6 @@ is_virt() {
         echo "VM: $_is_virt"
     fi
     $_is_virt
-}
-
-is_absolute_path() {
-    # 检查路径是否以/开头
-    # 注意语法和 ash 不同
-    [[ "$1" = /* ]]
 }
 
 is_cpu_supports_x86_64_v3() {
@@ -3227,7 +3223,7 @@ build_cmdline() {
 
 # 脚本可能多次运行，先清理之前的残留
 mkdir_clear() {
-    dir=$1
+    local dir=$1
 
     if [ -z "$dir" ] || [ "$dir" = / ]; then
         return
@@ -3408,6 +3404,32 @@ EOF
         fi
     }
 
+    cp_debian_kali_driver() {
+        # debian 13 的 linux-image.deb 有 /usr/lib 没有 /lib
+        # debian 13 的 scsi-modules.udeb 没有 /usr/lib 有 /lib
+        local src_drivers_dir=$1/lib/modules/$kver/kernel/drivers
+        if ! [ -d "$src_drivers_dir" ]; then
+            local src_drivers_dir=$1/usr/lib/modules/$kver/kernel/drivers
+        fi
+        local extra_drivers=$2
+        # 各个版本的 debian/kali installer initrd 都有 /lib
+        local dst_drivers_dir=$initrd_dir/lib/modules/$kver/kernel/drivers
+
+        (
+            cd $src_drivers_dir
+            for driver in $extra_drivers; do
+                # debian 模块没有压缩
+                # kali 模块有压缩
+                # 因此要有 *
+                if ! find $dst_drivers_dir -name "$driver.ko*" | grep -q .; then
+                    echo "adding driver: $driver"
+                    file=$(find . -name "$driver.ko*" | grep .)
+                    cp -fv --parents "$file" "$dst_drivers_dir"
+                fi
+            done
+        )
+    }
+
     # 不用在 windows 判断是哪种硬盘控制器，因为 256M 运行 windows 只可能是 xp，而脚本本来就不支持 xp
     # 在 debian installer 中判断能否用云内核
     create_can_use_cloud_kernel_sh can_use_cloud_kernel.sh
@@ -3468,6 +3490,24 @@ EOF
         cp -f $tmp/websocketd/usr/bin/websocketd usr/bin/
     fi
 
+    # 提前下载 pci-hyperv
+    # udeb 没有这个模块 curl https://deb.debian.org/debian/dists/stable/main/Contents-udeb-amd64.gz | zcat | grep pci-hyperv
+    # 缺少这个模块 azure 会找不到 nvme 硬盘
+    # kali 的 pci-hyperv/pci-hyperv-intf 已嵌入到内核，不需要下载
+
+    # 用到 pci-hyperv 才需要下载，因为
+    # 1. azure 普通网卡、scsi 硬盘不需要这个模块
+    # 2. 没有这个模块会缺少加速网卡，但还有 hyperv 合成网卡，可以正常上网
+    if { is_in_windows && wmic PATH Win32_PnPEntity where "DeviceID like 'VMBUS\\\\{44C4F61D-4444-4400-9D52-802E27EDE19F}\\\\%'" | grep -q . ||
+        [ -d /sys/module/pci_hyperv ]; } &&
+        # 可能在 host 或 controller 文件夹
+        ! ls lib/modules/$kver/kernel/drivers/pci/*/pci-hyperv.ko* >/dev/null 2>&1 &&
+        ! grep -Fq /pci-hyperv.ko lib/modules/$kver/modules.builtin; then
+        mkdir_clear $tmp/linux-image-$kver
+        download_and_extract_deb deb linux-image-$kver $tmp/linux-image-$kver
+        cp_debian_kali_driver $tmp/linux-image-$kver pci-hyperv
+    fi
+
     # >256M 或者当前系统是 windows
     if [ $ram_size -gt 256 ] || is_in_windows; then
         sed -i '/^pata-modules/d' $net_retriever
@@ -3502,27 +3542,11 @@ EOF
         # xen 还需要以下两个？
         # kernel/drivers/xen/xen-scsiback.ko
         # kernel/drivers/block/xen-blkback/xen-blkback.ko
-        # 但反查也找不到 curl https://deb.debian.org/debian/dists/bookworm/main/Contents-udeb-amd64.gz | zcat | grep xen
+        # udeb 没有这个模块 curl https://deb.debian.org/debian/dists/stable/main/Contents-udeb-amd64.gz | zcat | grep xen
         if [ -n "$extra_drivers" ]; then
             mkdir_clear $tmp/scsi
             download_and_extract_deb udeb scsi-modules-$kver-di $tmp/scsi
-            relative_drivers_dir=lib/modules/$kver/kernel/drivers
-
-            udeb_drivers_dir=$tmp/scsi/$relative_drivers_dir
-            dist_drivers_dir=$initrd_dir/$relative_drivers_dir
-            (
-                cd $udeb_drivers_dir
-                for driver in $extra_drivers; do
-                    # debian 模块没有压缩
-                    # kali 模块有压缩
-                    # 因此要有 *
-                    if ! find $dist_drivers_dir -name "$driver.ko*" | grep -q .; then
-                        echo "adding driver: $driver"
-                        file=$(find . -name "$driver.ko*" | grep .)
-                        cp -fv --parents "$file" "$dist_drivers_dir"
-                    fi
-                done
-            )
+            cp_debian_kali_driver $tmp/scsi "$extra_drivers"
         fi
     fi
 
@@ -3577,6 +3601,7 @@ get_net_drivers() {
 
 # 不用在 windows 判断是哪种硬盘/网络驱动，因为 256M 运行 windows 只可能是 xp，而脚本本来就不支持 xp
 # 而且安装过程也有二次判断
+# trans.sh 有同名方法
 get_drivers() {
     # 有以下结果组合出现
     # sd_mod
@@ -3587,6 +3612,7 @@ get_drivers() {
     # xen_blkfront
     # ahci
     # nvme
+    # pci_hyperv
     # mptspi
     # mptsas
     # vmw_pvscsi
@@ -3860,6 +3886,7 @@ This script is outdated, please download reinstall.sh again.
 
     if [ "$hold" = 0 ]; then
         info 'hold 0'
+        echo "Edit $tmp if needed."
         read -r -p 'Press Enter to continue...'
     fi
 
