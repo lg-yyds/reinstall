@@ -7,27 +7,24 @@ prefix=$1
 # 注意 debian initrd 没有 xargs
 
 # 最后一个 tty 是主 tty，显示的信息最全
-is_first=true
 if [ "$(uname -m)" = "aarch64" ]; then
     ttys="ttyS0 ttyAMA0 tty0"
 else
     ttys="ttyS0 tty0"
 fi
 
+is_first=true
 for tty in $ttys; do
-    # hytron 有ttyS0 但无法写入
-    if stty -g -F "/dev/$tty" >/dev/null 2>&1; then
-        if $is_first; then
-            is_first=false
-        else
-            printf " "
-        fi
+    if $is_first; then
+        is_first=false
+    else
+        printf " "
+    fi
 
-        printf "%s" "$prefix$tty"
+    printf "%s" "$prefix$tty"
 
-        if [ "$prefix" = "console=" ] &&
-            { [ "$tty" = ttyS0 ] || [ "$tty" = ttyAMA0 ]; }; then
-            printf ",115200n8"
-        fi
+    if [ "$prefix" = "console=" ] &&
+        { [ "$tty" = ttyS0 ] || [ "$tty" = ttyAMA0 ]; }; then
+        printf ",115200n8"
     fi
 done
