@@ -7036,7 +7036,7 @@ EOF
             # .cat
             apk add binutils
             for file in "$(get_path_in_correct_case '/wim-tmp/Windows/System32/CatRoot/{F750E6C3-38EE-11D1-85E5-00C04FC295EE}/')"*; do
-                if strings -e l "$file" | grep -iq vpci.sys; then
+                if strings -e l "$file" | grep -Fiq vpci.sys; then
                     cp -fv "$file" "$(get_path_in_correct_case '/wim/Windows/System32/CatRoot/{F750E6C3-38EE-11D1-85E5-00C04FC295EE}/')"
                 fi
             done
