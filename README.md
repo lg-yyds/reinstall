@@ -327,8 +327,9 @@ bash reinstall.sh netboot.xyz
 >
 > 如果不小心运行了脚本，可以在重启前运行 `bash reinstall.sh reset` 取消重装
 
-- 用户名为 `administrator`，脚本会提示输入密码，不输入则使用随机密码
-- 如果远程登录失败，可以尝试使用用户名 `.\administrator`
+- 脚本会提示输入用户名，不输入则使用 `administrator`
+- 脚本会提示输入密码，不输入则使用随机密码
+- 如果远程登录失败，请尝试在用户名前添加 `.\`，例如 `.\administrator`
 - 静态机器会自动配置好 IP，可能首次开机几分钟后才生效
 - 支持任意语言的 ISO
 - 自动绕过 Windows 11 硬件限制
@@ -446,6 +447,7 @@ bash reinstall.sh windows \
 
 #### 可选参数
 
+- `--username USERNAME` 设置用户名（仅限 Windows）
 - `--password PASSWORD` 设置密码
 - `--allow-ping` 设置 Windows 防火墙允许被 Ping
 - `--rdp-port PORT` 更改 RDP 端口

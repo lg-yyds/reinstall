@@ -63,7 +63,7 @@ for /f "tokens=2" %%a in ('echo list vol ^| diskpart ^| find " installer "') do 
 
 rem 及时退出
 if "%VolIndex%"=="" (
-    echo "Error: Cannot find installer partition." >&2
+    echo Error: Cannot find installer partition. >&2
     exit /b 1
 )
 
@@ -80,11 +80,51 @@ rem wmic pagefile
 
 rem 获取主硬盘 id
 rem vista pe 没有 wmic，因此用 diskpart
-(echo select vol %VolIndex% & echo list disk) | diskpart | find "* Disk " > X:\disk.txt
-for /f "tokens=3" %%a in (X:\disk.txt) do (
-    set "DiskIndex=%%a"
+
+rem 法语版 win7 diskpart 始终输出法语，即使设置了 chcp 437，因此不能用这个方法
+rem (echo select vol %VolIndex% & echo list disk) | diskpart | find "* Disk " > X:\disk.txt
+rem for /f "tokens=3" %%a in (X:\disk.txt) do (
+rem     set "DiskIndex=%%a"
+rem )
+
+rem PE 下没有 findstr，因此不能从 wmic 的输出直接选出开头为 * 的行，要用复杂的方法取出磁盘编号
+
+rem 输出 diskpart 结果到文件
+(echo select vol %VolIndex% & echo list disk) | diskpart | find "* " > X:\disk.txt
+type X:\disk.txt
+
+rem 逐行读取文件
+setlocal enabledelayedexpansion
+for /f "delims=" %%a in (X:\disk.txt) do (
+    set "line=%%a"
+
+    rem 寻找 * 开头的行
+    call :is_x_starts_with_char_y "!line!" "*" && (
+        rem 注意在 for %%b in (!safe_line!) do 中 * 会展开成文件列表，因此要先删除 *
+        rem 下面用的方法是用 * 作为分割符，获取 * 后面的第一列
+
+        rem for /f 会自动忽略行首的分隔符
+        for /f "tokens=1 delims=*" %%i in ("!line!") do (
+            set "safe_line=%%i"
+        )
+
+        rem 遍历每一列，找到是数字的那一列，就是磁盘编号
+        for %%b in (!safe_line!) do (
+            call :is_number "%%b" && (
+                set "DiskIndex=%%b"
+                goto :found_main_disk
+            )
+        )
+    )
 )
+
+:not_found_main_disk
+echo Error: Cannot find main disk. >&2
+exit /b 1
+
+:found_main_disk
 del X:\disk.txt
+endlocal & set "DiskIndex=%DiskIndex%"
 
 rem 判断 efi 还是 bios
 rem 或者用 https://learn.microsoft.com/windows-hardware/manufacture/desktop/boot-to-uefi-mode-or-legacy-bios-mode
@@ -142,7 +182,8 @@ rem 重新分区/格式化
 
 )) > X:\diskpart.txt
 
-rem 使用 diskpart /s ，出错不会执行剩下的 diskpart 命令
+rem 使用 diskpart /s ，出错后不会执行剩下的 diskpart 命令
+rem 但是返回值始终是 0
 diskpart /s X:\diskpart.txt
 del X:\diskpart.txt
 
@@ -251,6 +292,27 @@ if "%EnableEMS%"=="1" (
 echo on
 %setup% %ResizeRecoveryPartition% %EMS% %Unattended%
 exit /b
+
+
+
+
+
+:is_number
+rem 尝试转换字符串为数字，如果转换失败则说明不是数字
+rem 如果转换失败，num 是 0
+rem 这不影响参数是 0 时的判断
+set /a "num=%~1" >nul 2>nul
+if "%num%"=="%~1" (
+    exit /b 0
+)
+exit /b 1
+
+:is_x_starts_with_char_y
+set "tempStr=%~1"
+if "%tempStr:~0,1%"=="%~2" (
+   exit /b 0
+)
+exit /b 1
 
 :sleep
 rem 没有加载网卡驱动，无法用 ping 来等待

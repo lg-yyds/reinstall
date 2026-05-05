@@ -584,6 +584,10 @@ get_password_windows_administrator_base64() {
     get_config password-windows-administrator-base64
 }
 
+get_password_windows_user_base64() {
+    get_config password-windows-user-base64
+}
+
 get_password_plaintext() {
     get_config password-plaintext
 }
@@ -2244,10 +2248,8 @@ EOF
         rm -rf $os_dir/var/db/repos/gentoo
         chroot $os_dir emerge --sync
 
-        if [ "$(uname -m)" = x86_64 ]; then
-            # https://packages.gentoo.org/packages/sys-block/io-scheduler-udev-rules
-            chroot $os_dir emerge sys-block/io-scheduler-udev-rules
-        fi
+        # https://wiki.gentoo.org/wiki/Handbook:AMD64/Installation/Tools#Filesystem_tools
+        chroot $os_dir emerge sys-block/io-scheduler-udev-rules
 
         if is_efi; then
             chroot $os_dir emerge sys-fs/dosfstools
@@ -2259,10 +2261,18 @@ EOF
         fi
 
         # 安装 grub + 内核
-        # TODO: 先判断是否有 binpkg，有的话不修改 GRUB_PLATFORMS
         is_efi && grub_platforms="efi-64" || grub_platforms="pc"
         echo GRUB_PLATFORMS=\"$grub_platforms\" >>$os_dir/etc/portage/make.conf
         echo "sys-kernel/installkernel dracut grub" >$os_dir/etc/portage/package.use/installkernel
+
+        # 要设置 root=UUID=xxxx，否则 dracut 会报错
+        # 要注意 root=UUID=xxxx 头尾有空格
+        # https://wiki.gentoo.org/wiki/Installkernel#Install_chroot_check
+        # https://wiki.gentoo.org/wiki/Handbook:AMD64/Installation/Kernel#Chroot_detection
+        uuid=$(chroot $os_dir findmnt -rno UUID /)
+        mkdir -p $os_dir/etc/dracut.conf.d
+        echo "kernel_cmdline=\" root=UUID=$uuid \"" >$os_dir/etc/dracut.conf.d/00-installkernel.conf
+
         chroot $os_dir emerge sys-kernel/gentoo-kernel-bin
     }
 
@@ -3876,6 +3886,7 @@ EOF
         is_password_plaintext && sed -i 's/enforce=none/enforce=everyone/' $os_dir/etc/security/passwdqc.conf
 
         # 下载仓库，选择 profile
+        # https://github.com/gentoo/gentoo/blob/master/profiles/profiles.desc
         chroot $os_dir emerge-webrsync
         profile=$(chroot $os_dir eselect profile list | grep stable | grep systemd |
             awk '{print length($2), $2}' | sort -n | head -1 | awk '{print $2}')
@@ -7168,19 +7179,43 @@ EOF
     }
 
     # 修改应答文件
+    apk add xmlstarlet
     download $confhome/windows.xml /tmp/autounattend.xml
     locale=$(get_selected_image_prop 'Default Language')
     use_default_rdp_port=$(is_need_change_rdp_port && echo false || echo true)
-    password_base64=$(get_password_windows_administrator_base64)
+
     # 7601.24214.180801-1700.win7sp1_ldr_escrow_CLIENT_ULTIMATE_x64FRE_en-us.iso Image Name 为空
     # 将 xml Image Name 的值设为空可以正常安装
     sed -i \
         -e "s|%arch%|$arch|" \
         -e "s|%image_name%|$image_name|" \
         -e "s|%locale%|$locale|" \
-        -e "s|%administrator_password%|$password_base64|" \
         -e "s|%use_default_rdp_port%|$use_default_rdp_port|" \
         /tmp/autounattend.xml
+
+    # 账号密码
+    if [ -n "$username" ]; then
+        # 普通账号
+        password_base64=$(get_password_windows_user_base64)
+        xmlstarlet ed -L -N x="urn:schemas-microsoft-com:unattend" \
+            -d "//x:AdministratorPassword" \
+            /tmp/autounattend.xml
+        sed -i \
+            -e "s|%enable_administrator%|0|" \
+            -e "s|%user_username%|$username|" \
+            -e "s|%user_password%|$password_base64|" \
+            /tmp/autounattend.xml
+    else
+        # Administrator
+        password_base64=$(get_password_windows_administrator_base64)
+        xmlstarlet ed -L -N x="urn:schemas-microsoft-com:unattend" \
+            -d "//x:LocalAccounts" \
+            /tmp/autounattend.xml
+        sed -i \
+            -e "s|%enable_administrator%|1|" \
+            -e "s|%administrator_password%|$password_base64|" \
+            /tmp/autounattend.xml
+    fi
 
     # 修改应答文件，分区配置
     if is_efi; then
@@ -7268,12 +7303,12 @@ EOF
     wim_windows_xml=$(get_path_in_correct_case /wim/windows.xml)
     wim_setup_exe=$(get_path_in_correct_case /wim/setup.exe)
 
-    apk add xmlstarlet
     xmlstarlet ed -d '//comment()' /tmp/autounattend.xml >$wim_autounattend_xml
     unix2dos $wim_autounattend_xml
     info "autounattend.xml"
     # 查看最终文件，并屏蔽密码
     xmlstarlet ed -d '//*[name()="AdministratorPassword" or name()="Password"]' $wim_autounattend_xml | cat -n
+
     apk del xmlstarlet
 
     # 避免无参数运行 setup.exe 时自动安装

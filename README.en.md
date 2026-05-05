@@ -327,8 +327,9 @@ bash reinstall.sh netboot.xyz
 >
 > If the script was run by mistake, you can run `bash reinstall.sh reset` before rebooting to cancel the reinstallation operation.
 
-- Username `administrator`. The script prompts for a password. If left blank, a random one is generated.
-- If remote login fails, try using the username `.\administrator`.
+- The script prompts for a username. If left blank, will use `administrator`.
+- The script prompts for a password. If left blank, will use a random one.
+- If remote login fails, try adding `.\` before the username, for example, `.\administrator`.
 - The machine with a static IP will automatically configure the IP. It may take a few minutes to take effect on the first boot.
 - Supports ISO images in any language.
 - Automatically bypassing Windows 11 hardware requirements.
@@ -446,6 +447,7 @@ bash reinstall.sh windows \
 
 #### Optional Parameters
 
+- `--username USERNAME` Set Username (for Windows only)
 - `--password PASSWORD` Set Password
 - `--allow-ping` Configure Windows Firewall to Allow Ping Responses
 - `--rdp-port PORT` Change RDP port
