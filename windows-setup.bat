@@ -115,6 +115,9 @@ for /f "delims=" %%a in (X:\disk.txt) do (
                 goto :found_main_disk
             )
         )
+
+        rem 普通 for 是把“一段话”里的“每个词”排成队，让一个变量（%%b）轮流去当这些词
+        rem for /f   是把“一段话”拆成“几个零件”存在不同的变量里（%%i, %%j...）
     )
 )
 

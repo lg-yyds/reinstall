@@ -5810,24 +5810,25 @@ get_windows_type_from_windows_drive() {
     local os_dir=$1
 
     apk add hivex
-    software_hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SOFTWARE)
     system_hive=$(find_file_ignore_case $os_dir/Windows/System32/config/SYSTEM)
-    installation_type=$(hivexget $software_hive '\Microsoft\Windows NT\CurrentVersion' InstallationType 2>/dev/null || true)
-    product_type=$(hivexget $system_hive '\ControlSet001\Control\ProductOptions' ProductType 2>/dev/null || true)
+    product_type=$(hivexget $system_hive '\ControlSet001\Control\ProductOptions' ProductType)
     apk del hivex
 
-    # 根据 win11 multi-session 的情况
-    # InstallationType 比 ProductType 准确
+    # ProductType InstallationType 都是用来区分客户端和服务器系统
+    # 就驱动而言，用的是 ProductType
+    # https://learn.microsoft.com/windows-hardware/drivers/install/inf-manufacturer-section
+    # NTamd64.10.0       # 不限制 ProductType
+    # NTamd64.10.0.1     # 只接受 ProductType 为 1 的系统
 
-    # Vista wim 和注册表都没有 InstallationType
-    case "$installation_type" in
-    Client | Embedded) echo client ;;
-    Server | 'Server Core') echo server ;;
-    *) case "$product_type" in
-        WinNT) echo client ;;
-        ServerNT) echo server ;;
-        *) error_and_exit "Unknown Windows Type" ;;
-        esac ;;
+    # 实测也是用 ProductType
+    # 在 win11 右键 e1d.inf 安装驱动后，在任务管理器强制为任意网卡选择驱动，列表里面：
+    # win11 enterprise    有   i218-V/i-219V，有 i218-LM/i219-LM
+    # win11 multi-session 没有 i218-V/i-219V，有 i218-LM/i219-LM
+
+    case "$product_type" in
+    WinNT) echo client ;;
+    LanmanNT | ServerNT) echo server ;;
+    *) error_and_exit "Unexpected Product Type: $product_type" ;;
     esac
 }
 
@@ -5855,6 +5856,21 @@ get_intel_download_url() {
     # intel 禁止了 wget 下载网页
     wget -U curl/7.54.1 "$url" -O- | sed 's,",\n,g' |
         grep -Eio -m1 "https://.+/$file_regex" | grep .
+}
+
+apk_add_hivex_perl() {
+    # TODO: alpine 3.24 发布后删除
+    # hivex-perl 要从 edge/community 仓库下载
+    local alpine_mirror
+    alpine_mirror=$(grep '^http.*/main$' /etc/apk/repositories | sed 's,/[^/]*/main$,,' | head -1)
+    apk add --repository "$alpine_mirror/edge/community" \
+        --force-non-repository \
+        --virtual edge \
+        hivex-perl
+}
+
+apk_del_hivex_perl() {
+    apk del edge
 }
 
 install_windows() {
@@ -5942,14 +5958,14 @@ install_windows() {
     if [ "$image_count" = 1 ]; then
         # 只有一个版本就用那个版本
         image_name=$all_image_names
-        image_index=1
+        iso_image_index=1
     else
         while true; do
             # 匹配成功
             # 改成正确的大小写
             if matched_image_name=$(printf '%s\n' "$all_image_names" | grep -Fix "$image_name"); then
                 image_name=$matched_image_name
-                image_index=$(wiminfo "$iso_install_wim" "$image_name" | grep 'Index:' | awk '{print $NF}')
+                iso_image_index=$(wiminfo "$iso_install_wim" "$image_name" | grep 'Index:' | awk '{print $NF}')
                 break
             fi
 
@@ -5970,54 +5986,35 @@ install_windows() {
     fi
 
     get_selected_image_prop() {
-        get_image_prop "$iso_install_wim" "$image_index" "$1"
+        get_image_prop "$iso_install_wim" "$iso_image_index" "$1"
     }
 
-    # 多会话的信息来自注册表，因为没有官方 iso
-
-    # Installation Type:
-    # https://github.com/search?q=InstallationType+Client+Embedded+Server+Core&type=code
-    # - Client      (普通 windows)
-    # - Server      (windows server 带桌面体验)
-    # - Server Core (windows server 不带桌面体验)
-    # - Embedded    (WES7 / Thin PC)
-    # - Client      (windows 10/11 enterprise 多会话)
-
-    # Product Type:
+    # Windows Server 作为域服务器时，ProductType 会变成 LanmanNT ?
     # https://cloud.tencent.com/developer/article/2465206
-    # https://learn.microsoft.com/en-us/azure/virtual-desktop/windows-multisession-faq#why-does-my-application-report-windows-enterprise-multi-session-as-a-server-operating-system
-    # - WinNT    (普通 windows)
-    # - ServerNT (windows server 带桌面体验)
-    # - ServerNT (windows server 不带桌面体验)
-    # - WinNT    (WES7 / Thin PC)
-    # - ServerNT (windows 10/11 enterprise 多会话)
+    # https://github.com/search?q=InstallationType+Client+Embedded+Server+Core&type=code
+    # https://learn.microsoft.com/azure/virtual-desktop/windows-multisession-faq#why-does-my-application-report-windows-enterprise-multi-session-as-a-server-operating-system
 
-    # Product Suite:
-    # https://www.geoffchappell.com/studies/windows/km/ntoskrnl/api/ex/exinit/productsuite.htm
-    # - Terminal Server (普通 windows)
-    # - Enterprise      (windows server 2025 带桌面体验)
-    # - Enterprise      (windows server 2025 不带桌面体验)
-    # - Terminal Server (windows server 2012 R2 评估板 带桌面体验，注册表也是这个值)
-    # - Terminal Server (windows server 2022 R2 评估板 不带桌面体验，注册表也是这个值)
-    # - Terminal Server (WES7 / Thin PC)
-    # - ?               (windows 10/11 enterprise 多会话)
+    # 信息是从注册表获取，因为某些 install.wim 可能缺少属性
+    # Azure 上能使用 Windows 10/11 Enterprise 多会话
+    # HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Windows NT\CurrentVersion\InstallationType
+    # HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\ProductOptions\ProductType
+    # HKEY_LOCAL_MACHINE\SYSTEM\ControlSet001\Control\ProductOptions\ProductSuite
 
-    # 用内核版本号筛选驱动
-    # 使得可以安装 Hyper-V Server / Azure Stack HCI 等 Windows Server 变种
-    # 7601.24214.180801-1700.win7sp1_ldr_escrow_CLIENT_ULTIMATE_x64FRE_en-us.iso wim 没有 Installation Type
-    # Vista wim 和 注册表 都没有 InstallationType
-    if false; then
-        nt_ver=$(get_selected_image_prop "Major Version").$(get_selected_image_prop "Minor Version")
-        build_ver=$(get_selected_image_prop "Build")
-        installation_type=$(get_selected_image_prop "Installation Type")
-    fi
+    # 系统                                InstallationType    ProductType    ProductSuite
+    # Windows Client (普通 Windows)          Client             WinNT        Terminal Server
+    # Windows 10/11 Enterprise 多会话        Client             ServerNT     Terminal Server
+    # Windows Server 2012 R2 桌面体验        Server             ServerNT     Terminal Server 和 DataCenter (两行)
+    # Windows Server 2012 R2 不带桌面体验    Server Core        ServerNT     Terminal Server 和 DataCenter (两行)
+    # Windows Server 2025 桌面体验           Server             ServerNT     Enterprise
+    # Windows Server 2025 不带桌面体验       Server Core        ServerNT     Enterprise
+    # WES7 / Thin PC                         Embedded           WinNT        Terminal Server
 
     mount_iso_install_wim_to() {
         local dir=$1
 
         mkdir -p "$dir"
         # shellcheck disable=SC2046
-        wimmount "$iso_install_wim" "$image_index" "$dir" \
+        wimmount "$iso_install_wim" "$iso_image_index" "$dir" \
             $($is_swm && echo "--ref=$(dirname "$iso_install_wim")/$swm_ref")
     }
 
@@ -6032,6 +6029,7 @@ install_windows() {
     get_windows_version_from_windows_drive /wim
 
     # 检测 client/server，并转换成标准版 windows 名称
+    # 用于将 Hyper-V Server / Azure Stack HCI / Windows Server AC 的版本号转换成对应的 LTSC 版本号，用于查找驱动
     windows_type=$(get_windows_type_from_windows_drive /wim)
     product_ver=$(
         case "$windows_type" in
@@ -6197,21 +6195,24 @@ install_windows() {
         )
     fi
 
+    # $iso_image_index 是原 iso 里面的镜像 wim 编号
+    # $image_index 是复制到 installer 后的镜像 wim 编号
+
     # 如果是 swm，要先合并成 wim 才能编辑
     if $is_swm; then
         install_wim=$(echo "$install_wim" | sed 's/\.swm$/.wim/i')
         # 防止不格盘二次运行时报错：文件已存在
         rm -f "$install_wim"
-        wimexport --ref="$(dirname "$iso_install_wim")/$swm_ref" "$iso_install_wim" "$image_index" "$install_wim"
-        # 只导出了要安装的镜像，因此 image_index 变为 1
+        wimexport --ref="$(dirname "$iso_install_wim")/$swm_ref" "$iso_install_wim" "$iso_image_index" "$install_wim"
+        # 只导出了要安装的镜像，因此 image_index 为 1
         image_index=1
     elif false; then
         # 优化 install.wim
         # 优点: 可以节省 200M~600M 空间，用来创建虚拟内存
         #       （意义不大，因为已经删除了 boot.wim 用来创建虚拟内存，vista 除外）
         # 缺点: 如果 install.wim 只有一个镜像，则只能缩小 10M+
-        time wimexport --threads "$(get_build_threads 512)" "$iso_install_wim" "$image_index" "$install_wim"
-        # 只导出了要安装的镜像，因此 image_index 变为 1
+        time wimexport --threads "$(get_build_threads 512)" "$iso_install_wim" "$iso_image_index" "$install_wim"
+        # 只导出了要安装的镜像，因此 image_index 为 1
         image_index=1
         info "install.wim size"
         echo "Original:  $(get_filesize_mb "$iso_install_wim")"
@@ -6219,14 +6220,25 @@ install_windows() {
         echo
     else
         cp "$iso_install_wim" "$install_wim"
+        image_index="$iso_image_index"
     fi
 
     # win11 要求 1GHz 2核（1核超线程也行）
-    # 用注册表无法绕过
+    # 判断条件是 install.wim 元信息里的 Installation Type，而不是 install.wim 注册表里面的
+    # 7601.24214.180801-1700.win7sp1_ldr_escrow_CLIENT_ULTIMATE_x64FRE_en-us.iso wim 没有 Installation Type
+    # Vista wim 和 注册表 都没有 InstallationType
+    installation_type_from_install_wim_metadata=$(get_selected_image_prop "Installation Type" 2>/dev/null || true)
+
+    # 安装时无法用注册表绕过
     # https://github.com/pbatard/rufus/issues/1990
     # https://learn.microsoft.com/windows/iot/iot-enterprise/Hardware/System_Requirements
     # win11 旧版本安装程序（24h2之前）无法用 setup.exe /product server 跳过 cpu 核数限制，因此在xml里解除限制
-    if [ "$product_ver" = "11" ] && [ "$(nproc)" -le 1 ]; then
+
+    # windows 11 multi-session 用注册表的信息识别成 server 2022 用于匹配驱动，"$product_ver" 是 2022 而不是 11
+    # 因此这里判断的条件不是 [ "$product_ver" = "11" ]
+    if [ "$build_ver" -ge 22000 ] &&
+        [ "$(echo "$installation_type_from_install_wim_metadata" | to_lower)" = "client" ] &&
+        [ "$(nproc)" -le 1 ]; then
         wiminfo "$install_wim" "$image_index" --image-property WINDOWS/INSTALLATIONTYPE=Server
     fi
 
@@ -6790,10 +6802,10 @@ EOF
             download $baseurl/$dir/virtio-win-gt-$arch_xdd.msi $drv/virtio.msi $can_use_cn_mirror
             match="FILE_*_${virtio_sys}_${arch}*"
             7z x $drv/virtio.msi -o$drv/virtio -i!$match -y -bb1
-
-            # 为没有后缀名的文件添加后缀名
             (
                 cd $drv/virtio
+
+                # 为没有后缀名的文件添加后缀名
                 echo "Recognizing file extension..."
                 for file in *"${virtio_sys}_${arch}"; do
                     recognized=false
@@ -7052,13 +7064,7 @@ EOF
             to_system_hive="$(find_file_ignore_case /wim/Windows/System32/config/SYSTEM)"
             to_software_hive="$(find_file_ignore_case /wim/Windows/System32/config/SOFTWARE)"
 
-            # TODO: alpine 3.24 发布后删除
-            # hivex-perl 要从 edge/community 仓库下载
-            alpine_mirror=$(grep '^http.*/main$' /etc/apk/repositories | sed 's,/[^/]*/main$,,' | head -1)
-            apk add --repository "$alpine_mirror/edge/community" \
-                --force-non-repository \
-                --virtual edge \
-                hivex-perl
+            apk_add_hivex_perl
 
             # 获取当前生效的 wvpci.inf 文件
             # 得到 wvpci.inf_amd64_86afbe8940682d27 这样的文件名
@@ -7110,7 +7116,7 @@ EOF
 EOF
             hivexregedit --merge "$to_system_hive" "$reg"
 
-            apk del edge
+            apk_del_hivex_perl
         else
             error_and_exit "vpci driver not found."
         fi
