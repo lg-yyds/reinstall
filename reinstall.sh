@@ -86,9 +86,9 @@ Usage: $reinstall_____ anolis      7|8|23
                        nixos       25.11
                        fedora      43|44
                        debian      9|10|11|12|13
+                       opensuse    16.0|tumbleweed
                        openeuler   20.03|22.03|24.03
                        alpine      3.20|3.21|3.22|3.23
-                       opensuse    15.6|16.0|tumbleweed
                        ubuntu      18.04|20.04|22.04|24.04|26.04 [--minimal]
                        kali
                        arch
@@ -1479,13 +1479,11 @@ Continue?
             # leap
             dir=distribution/leap/$releasever/appliances
             case "$releasever" in
-            15.6) file=openSUSE-Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;;
             16.0) file=Leap-$releasever-Minimal-VM.$basearch-Cloud.qcow2 ;;
             # 16.0) file=Leap-$releasever-Minimal-VM.$basearch-kvm$(if [ "$basearch" = x86_64 ]; then echo '-and-xen'; fi).qcow2 ;;
             esac
 
             # https://src.opensuse.org/openSUSE/Leap-Images/src/branch/leap-16.0/kiwi-templates-Minimal/Minimal.kiwi
-            # https://build.opensuse.org/projects/Virtualization:Appliances:Images:openSUSE-Leap-15.6/packages/kiwi-templates-Minimal/files/Minimal.kiwi
             # https://build.opensuse.org/projects/Virtualization:Appliances:Images:openSUSE-Tumbleweed/packages/kiwi-templates-Minimal/files/Minimal.kiwi
             # 有专门的kvm镜像，openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2，里面没有cloud-init
             # file=openSUSE-Leap-15.5-Minimal-VM.x86_64-kvm-and-xen.qcow2
@@ -1913,7 +1911,7 @@ verify_os_name() {
         'fedora      43|44' \
         'nixos       25.11' \
         'debian      9|10|11|12|13' \
-        'opensuse    15.6|16.0|tumbleweed' \
+        'opensuse    16.0|tumbleweed' \
         'alpine      3.20|3.21|3.22|3.23' \
         'openeuler   20.03|22.03|24.03' \
         'ubuntu      18.04|20.04|22.04|24.04|26.04' \
