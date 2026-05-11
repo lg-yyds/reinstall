@@ -1783,6 +1783,7 @@ install_nixos() {
 
     if is_need_set_ssh_keys; then
         nix_ssh_keys_or_PermitRootLogin="
+services.openssh.settings.PasswordAuthentication = false;
 users.users.root.openssh.authorizedKeys.keys = [
 $(del_comment_lines </configs/ssh_keys | del_empty_lines | quote_line | add_space 2)
 ];
@@ -2029,10 +2030,10 @@ basic_init() {
     # 公钥/密码
     if is_need_set_ssh_keys; then
         set_ssh_keys_and_del_password $os_dir
+        change_ssh_conf_for_root_key_login $os_dir
     else
         change_root_password $os_dir
-        allow_root_password_login $os_dir
-        allow_password_login $os_dir
+        change_ssh_conf_for_root_password_login $os_dir
     fi
 
     # 下载 fix-eth-name.service
@@ -4082,30 +4083,50 @@ set_ssh_keys_and_del_password() {
     chroot $os_dir passwd -d root
 }
 
-# 除了 alpine 都会用到
-change_ssh_conf() {
-    os_dir=$1
-    key=$2
-    value=$3
-    sub_conf=$4
+change_ssh_conf_if_different() {
+    local os_dir=$1
+    local key=$2
+    local value=$3
+    local sub_conf=$4
+    if [ -z "$sub_conf" ]; then
+        sub_conf=$(echo "01-$key.conf" | to_lower)
+    fi
 
-    if line="^$key .*" && grep -Exq "$line" $os_dir/etc/ssh/sshd_config 2>/dev/null; then
-        # 如果 sshd_config 存在此 key（非注释状态），则替换
+    # 有些发行版自带了某些配置，例如
+    # ubuntu:
+    # cat /etc/ssh/sshd_config.d/60-cloudimg-settings.conf | grep -i PasswordAuthentication
+    # PasswordAuthentication no
+
+    # gentoo:
+    # cat /etc/ssh/sshd_config.d/9999999gentoo-pam.conf | grep -i PasswordAuthentication
+    # PasswordAuthentication no
+
+    # 0. 如果已经有这个配置，则不修改，避免不必要的改动
+    if chroot "$os_dir" sshd -G | grep -Fxiq "$key $value"; then
+        return
+    fi
+
+    if line="^$key .*" && grep -Exiq "$line" $os_dir/etc/ssh/sshd_config 2>/dev/null; then
+        # 1. 如果 sshd_config 存在此 key（非注释状态），则替换
         sed -Ei "s/$line/$key $value/" $os_dir/etc/ssh/sshd_config
-    elif include_line='^Include.*/etc/ssh/sshd_config.d' &&
+    elif include_line='^Include .*/etc/ssh/sshd_config.d' &&
+        # 2. 如果 sshd_config 设置了读取 sshd_config.d
+        #    则写入到 sshd_config.d/01-xxx.conf
+
         # arch 没有 /etc/ssh/sshd_config.d/ 文件夹
         # opensuse tumbleweed 没有 /etc/ssh/sshd_config
         #                       有 /etc/ssh/sshd_config.d/ 文件夹
         #                       有 /usr/etc/ssh/sshd_config
-        { grep -q "$include_line" $os_dir/etc/ssh/sshd_config ||
-            grep -q "$include_line" $os_dir/usr/etc/ssh/sshd_config; } 2>/dev/null; then
+        { grep -iq "$include_line" $os_dir/etc/ssh/sshd_config ||
+            grep -iq "$include_line" $os_dir/usr/etc/ssh/sshd_config; } 2>/dev/null; then
         mkdir -p $os_dir/etc/ssh/sshd_config.d/
         echo "$key $value" >"$os_dir/etc/ssh/sshd_config.d/$sub_conf"
     else
-        # 如果 sshd_config 存在此 key (无论是否已注释)，则替换，包括删除注释
-        # 否则追加
+        # 3. 写入 sshd_config
+        #    如果 sshd_config 存在此 key (无论是否已注释)，则替换，包括删除注释
+        #    否则追加
         line="^[# ]*$key .*"
-        if grep -Exq "$line" $os_dir/etc/ssh/sshd_config; then
+        if grep -Exiq "$line" $os_dir/etc/ssh/sshd_config; then
             sed -Ei "s/$line/$key $value/" $os_dir/etc/ssh/sshd_config
         else
             echo "$key $value" >>$os_dir/etc/ssh/sshd_config
@@ -4113,32 +4134,40 @@ change_ssh_conf() {
     fi
 }
 
-allow_password_login() {
-    os_dir=$1
-    change_ssh_conf "$os_dir" PasswordAuthentication yes 01-PasswordAuthentication.conf
+change_ssh_conf_for_root_key_login() {
+    local os_dir=$1
+
+    # 目前脚本只用 root ，不需要设置这个
+    # change_ssh_conf_if_different "$os_dir" PasswordAuthentication no
+
+    # 这个也不需要设置，默认就是 prohibit-password
+    # change_ssh_conf_if_different "$os_dir" PermitRootLogin prohibit-password
 }
 
-allow_root_password_login() {
-    os_dir=$1
+change_ssh_conf_for_root_password_login() {
+    local os_dir=$1
 
     # opensuse 16/tumbleweed 安装 openssh-server-config-rootlogin
     # 会生成 /usr/etc/ssh/sshd_config.d/50-permit-root-login.conf
     # 但是如果用户删除了此文件，包有更新的话，可能会重新创建这个文件？
     # 因此先不用这个方法
-    if false && [ -f $os_dir/etc/os-release ] &&
-        grep -iq opensuse $os_dir/etc/os-release &&
-        ! grep -iq 15.6 $os_dir/etc/os-release; then
+    if false &&
+        [ -f $os_dir/etc/os-release ] &&
+        grep -iq opensuse $os_dir/etc/os-release; then
         chroot $os_dir zypper install -y openssh-server-config-rootlogin
-    else
-        change_ssh_conf "$os_dir" PermitRootLogin yes 01-permitrootlogin.conf
     fi
+
+    # PasswordAuthentication 默认是 yes
+    # 但某些发行版会在 sshd_config.d 里设置 PasswordAuthentication no
+    change_ssh_conf_if_different "$os_dir" PasswordAuthentication yes
+    change_ssh_conf_if_different "$os_dir" PermitRootLogin yes
 }
 
 change_ssh_port() {
-    os_dir=$1
-    ssh_port=$2
+    local os_dir=$1
+    local ssh_port=$2
 
-    change_ssh_conf "$os_dir" Port "$ssh_port" 01-change-ssh-port.conf
+    change_ssh_conf_if_different "$os_dir" Port "$ssh_port"
 }
 
 change_root_password() {
@@ -4595,7 +4624,11 @@ install_fnos() {
 
     # ssh root 登录，测试用
     if false; then
-        allow_root_password_login $os_dir
+        if is_need_set_ssh_keys; then
+            change_ssh_conf_for_root_key_login $os_dir
+        else
+            change_ssh_conf_for_root_password_login $os_dir
+        fi
         chroot $os_dir systemctl enable ssh
     fi
 
@@ -5035,11 +5068,15 @@ EOF
         fi
 
         # 自带的 60-cloudimg-settings.conf 禁止了 PasswordAuthentication
-        file=$os_dir/etc/ssh/sshd_config.d/60-cloudimg-settings.conf
-        if [ -f $file ]; then
-            sed -i '/^PasswordAuthentication/d' $file
-            if [ -z "$(cat $file)" ]; then
-                rm -f $file
+        # 可删除可不删除，因为现在会先读取有效 sshd 配置再修改 sshd 配置
+        # 如果要删除 60-cloudimg-settings.conf 则要在 change_ssh_conf_if_different 之前删除
+        if false; then
+            file=$os_dir/etc/ssh/sshd_config.d/60-cloudimg-settings.conf
+            if [ -f $file ]; then
+                sed -i '/^PasswordAuthentication/d' $file
+                if [ -z "$(cat $file)" ]; then
+                    rm -f $file
+                fi
             fi
         fi
 
@@ -7814,7 +7851,7 @@ mount / -o remount,size=100%
 sync_time || true
 
 # 安装 ssh 并更改端口
-apk add openssh
+apk add openssh-server
 if is_need_change_ssh_port; then
     change_ssh_port / $ssh_port
 fi
@@ -7822,6 +7859,8 @@ fi
 # 设置密码，添加开机启动 + 开启 ssh 服务
 if is_need_set_ssh_keys; then
     set_ssh_keys_and_del_password /
+    # 目前脚本只用 root，不需要设置这个
+    # change_ssh_conf_if_different / PasswordAuthentication no
     printf '\n' | setup-sshd
 else
     change_root_password /
