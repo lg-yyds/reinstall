@@ -1682,6 +1682,21 @@ install_nixos() {
     export USER=root
     export HOME=/root
 
+    configure_nix_substituters() {
+        if ! is_in_china; then
+            return
+        fi
+
+        nix_conf=/etc/nix/nix.conf
+        mkdir -p "$(dirname "$nix_conf")"
+
+        if [ -f "$nix_conf" ]; then
+            sed -i '/^[[:space:]]*substituters[[:space:]]*=/d' "$nix_conf"
+        fi
+
+        echo "substituters = $mirror/store" >>"$nix_conf"
+    }
+
     case "$nix_from" in
     alpine)
         apk add nix
@@ -1690,9 +1705,7 @@ install_nixos() {
         # https://gitlab.alpinelinux.org/alpine/aports/-/blob/master/community/nix/APKBUILD#L125
         sed -i '/max-jobs/d' /etc/nix/nix.conf
         echo "max-jobs = $threads" >>/etc/nix/nix.conf
-        if is_in_china; then
-            echo "substituters = $mirror/store" >>/etc/nix/nix.conf
-        fi
+        configure_nix_substituters
         rc-service -q nix-daemon restart
         # 添加 nix-env 安装的软件到 PATH
         PATH="/root/.nix-profile/bin:$PATH"
@@ -1743,6 +1756,7 @@ install_nixos() {
         apk del xz
         # shellcheck source=/dev/null
         . /root/.nix-profile/etc/profile.d/nix.sh
+        configure_nix_substituters
         ;;
     esac
 
@@ -5667,49 +5681,58 @@ get_aws_repo() {
     fi
 }
 
-get_client_name_by_build_ver() {
-    build_ver=$1
-
-    if [ "$build_ver" -ge 22000 ]; then
-        echo 11
-    elif [ "$build_ver" -ge 10240 ]; then
-        echo 10
-    elif [ "$build_ver" -ge 9600 ]; then
-        echo 8.1
-    elif [ "$build_ver" -ge 9200 ]; then
-        echo 8
-    elif [ "$build_ver" -ge 7600 ]; then
-        echo 7
-    elif [ "$build_ver" -ge 6000 ]; then
-        echo vista
-    else
-        error_and_exit "Unknown Build Version: $build_ver"
-    fi
-}
-
 # 将 AC/SAC 版本号 转换为 LTSC 版本号
 # 用于查找驱动
-get_server_name_by_build_ver() {
-    build_ver=$1
+get_windows_name_by_version() {
+    local nt_ver=$1
+    local build_ver=$2
+    local windows_type=$3
 
-    if [ "$build_ver" -ge 26100 ]; then
-        echo 2025
-    elif [ "$build_ver" -ge 20348 ]; then
-        echo 2022
-    elif [ "$build_ver" -ge 17763 ]; then
-        echo 2019
-    elif [ "$build_ver" -ge 14393 ]; then
-        echo 2016
-    elif [ "$build_ver" -ge 9600 ]; then
-        echo 2012 r2
-    elif [ "$build_ver" -ge 9200 ]; then
-        echo 2012
-    elif [ "$build_ver" -ge 7600 ]; then
-        echo 2008 r2
-    elif [ "$build_ver" -ge 6001 ]; then
-        echo 2008
+    local windows_name
+    windows_name=$(
+        case "$windows_type" in
+        client)
+            case "$nt_ver" in
+            10.0)
+                if [ "$build_ver" -ge 22000 ]; then
+                    echo 11
+                else
+                    echo 10
+                fi
+                ;;
+            6.3) echo 8.1 ;;
+            6.2) echo 8 ;;
+            6.1) echo 7 ;;
+            6.0) echo vista ;;
+            esac
+            ;;
+
+        server)
+            case "$nt_ver" in
+            10.0)
+                if [ "$build_ver" -ge 26100 ]; then
+                    echo 2025
+                elif [ "$build_ver" -ge 20348 ]; then
+                    echo 2022
+                elif [ "$build_ver" -ge 17763 ]; then
+                    echo 2019
+                else
+                    echo 2016
+                fi
+                ;;
+            6.3) echo '2012 r2' ;;
+            6.2) echo '2012' ;;
+            6.1) echo '2008 r2' ;;
+            6.0) echo '2008' ;;
+            esac
+            ;;
+        esac
+    )
+
+    if [ -n "$windows_name" ]; then
+        echo "$windows_name"
     else
-        error_and_exit "Unknown Build Version: $build_ver"
+        error_and_exit "Unknown Windows Version: $nt_ver $build_ver $windows_type"
     fi
 }
 
@@ -6018,12 +6041,7 @@ install_windows() {
     # 检测 client/server，并转换成标准版 windows 名称
     # 用于将 Hyper-V Server / Azure Stack HCI / Windows Server AC 的版本号转换成对应的 LTSC 版本号，用于查找驱动
     windows_type=$(get_windows_type_from_windows_drive /wim)
-    product_ver=$(
-        case "$windows_type" in
-        client) get_client_name_by_build_ver "$build_ver" ;;
-        server) get_server_name_by_build_ver "$build_ver" ;;
-        esac
-    )
+    product_ver=$(get_windows_name_by_version "$nt_ver" "$build_ver" "$windows_type")
 
     # 检测 sac 和 nvme
     {
