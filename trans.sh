@@ -4274,8 +4274,11 @@ _is_ssh_kv_effective() {
     local value=$3
 
     # centos 7 不支持 -G
-    { chroot "$os_dir" sshd -G || chroot "$os_dir" sshd -T; } 2>/dev/null |
-        grep -Fxiq "$key $value"
+    if res=$(chroot "$os_dir" sshd -G 2>/dev/null || chroot "$os_dir" sshd -T 2>/dev/null); then
+        printf "%s\n" "$res" | grep -Fxiq "$key $value"
+    else
+        error_and_exit "Failed to verify sshd config."
+    fi
 }
 
 is_ssh_kv_effective() {
@@ -6116,6 +6119,7 @@ is_nt_ver_ge() {
     [ "$orig" = "$sorted" ]
 }
 
+# reinstall.sh 有同名方法
 is_administrator_username() {
     username_in_lower=$(printf "%s" "$1" | to_lower)
 

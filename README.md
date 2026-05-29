@@ -251,9 +251,9 @@ bash reinstall.sh dd --img "https://example.com/xxx.xz"
 - `--password PASSWORD` 设置密码（安装期间观察日志用）
 - `--ssh-key KEY` 设置 SSH 登录公钥（安装期间观察日志用），[格式如下](#--ssh-key)。当使用公钥时，密码为空
 - `--ssh-port PORT` 修改 SSH 端口（安装期间观察日志用）
-- `--rdp-port PORT` 修改 RDP 端口 (仅限 DD Windows)
+- `--rdp-port PORT` 修改 RDP 端口（仅限 DD Windows）
 - `--web-port PORT` 修改 Web 端口（安装期间观察日志用）
-- `--allow-ping` 设置 Windows 防火墙允许被 Ping (仅限 DD Windows)
+- `--allow-ping` 设置 Windows 防火墙允许被 Ping（仅限 DD Windows）
 - `--frpc-config PATH` 添加 frpc 内网穿透（仅限 DD Windows），参数填配置文件的本地路径或 HTTP 链接
 - `--cloud-data PATH_OR_URL` 为 DD Linux 镜像注入 cloud-init NoCloud 配置（仅限 DD Linux）
 - `--hold 1` 仅重启到安装环境，不运行安装，用于 SSH 登录验证网络连通性

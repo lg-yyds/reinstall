@@ -2379,6 +2379,7 @@ assert_username_valid() {
     fi
 }
 
+# trans.sh 有同名方法
 is_administrator_username() {
     username_in_lower=$(to_lower <<<"$1")
 
@@ -2409,8 +2410,8 @@ prompt_username() {
         default_username=root
     fi
 
-    warn false "Leave blank to use $default_username"
-    warn false "不填写则使用 $default_username"
+    warn false "Set username, leave blank to use $default_username"
+    warn false "设置用户名，不填写则使用 $default_username"
     IFS= read -r -p "Username: " username
     username="$(printf "%s" "$username" | trim)"
 
@@ -2422,8 +2423,8 @@ prompt_username() {
 
 prompt_password() {
     info "prompt password"
-    warn false "Leave blank to use a random password."
-    warn false "不填写则使用随机密码"
+    warn false "Set password, leave blank to use a random password."
+    warn false "设置密码，不填写则使用随机密码"
     while true; do
         IFS= read -r -p "Password: " password
         if [ -n "$password" ]; then
@@ -5098,26 +5099,26 @@ fi
 echo
 if [ "$distro" = netboot.xyz ]; then
     echo '重启后进入 netboot.xyz。'
-    echo "或者，现在运行 \"$reinstall_____ reset\" 以清除该引导项。"
+    echo "或者现在运行 \"$reinstall_____ reset\" 以清除该引导项。"
     echo
     echo 'Reboot to start netboot.xyz.'
-    echo "Or, run \"$reinstall_____ reset\" now to clear this boot entry."
+    echo "Or run \"$reinstall_____ reset\" now to clear this boot entry."
     echo
 
 elif [ "$distro" = alpine ] && [ "$hold" = 1 ]; then
     echo '重启后进入 Alpine Live OS。'
-    echo "或者，现在运行 \"$reinstall_____ reset\" 以清除该引导项。"
+    echo "或者现在运行 \"$reinstall_____ reset\" 以清除该引导项。"
     echo
     echo 'Reboot to start Alpine Live OS.'
-    echo "Or, run \"$reinstall_____ reset\" now to clear this boot entry."
+    echo "Or run \"$reinstall_____ reset\" now to clear this boot entry."
     echo
 else
     warn false '警告：重装会清除主硬盘的所有数据，包括所有分区！'
-    echo '重启后开始安装。'
-    echo "或者，现在运行 \"$reinstall_____ reset\" 以取消重装。"
+    echo '重启后开始重装。'
+    echo "或者现在运行 \"$reinstall_____ reset\" 以取消重装。"
     echo
     warn false 'Warning: Reinstalling will erase all data on the main disk, including all partitions!'
-    echo 'Reboot to start the installation.'
-    echo "Or, run \"$reinstall_____ reset\" now to cancel the installation."
+    echo 'Reboot to start the reinstallation.'
+    echo "Or run \"$reinstall_____ reset\" now to cancel the reinstallation."
 fi
 echo
