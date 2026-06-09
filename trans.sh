@@ -164,11 +164,17 @@ retry() {
         local interval=5
     fi
 
+    local i
     for i in $(seq $max_try); do
         if "$@"; then
             return
         else
             ret=$?
+            # wget -O- | grep -m1 成功后会提前关闭管道，导致 141 错误
+            # 这是预期行为，因此需要排除
+            if [ $ret -eq 141 ]; then
+                return
+            fi
             if [ $i -ge $max_try ]; then
                 return $ret
             fi
@@ -187,6 +193,57 @@ get_url_type() {
 
 is_magnet_link() {
     [[ "$1" = magnet:* ]]
+}
+
+create_alpine_rootfs() {
+    local os_dir=$1
+    local init_now=${2:-false}
+
+    # 复制当前系统的 /etc/apk 文件夹
+    mkdir -p "$os_dir"
+    cp -a --parents /etc/apk "$os_dir"
+    rm -f "$os_dir/etc/apk/world"
+
+    # 安装 alpine
+    apk add --root "$os_dir" --initdb \
+        alpine-base openssl ca-certificates
+
+    if $init_now; then
+        cp_resolv_conf "$os_dir"
+        mount_pseudo_fs "$os_dir"
+    fi
+}
+
+download_via_browser() {
+    local url=$1
+    local path=$2
+
+    local os_dir=/os/alpine_for_browser
+    mkdir_clear "$os_dir"
+
+    # 安装 chromium-headless-shell npm 到硬盘，减少内存占用
+    create_alpine_rootfs "$os_dir" true
+    apk add --root "$os_dir" chromium-headless-shell npm
+
+    # 安装 playwright
+    # shellcheck disable=SC2046
+    PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 \
+        chroot "$os_dir" \
+        npm install \
+        --no-save --no-package-lock \
+        --prefix "/work" \
+        $(is_in_china && echo '--registry=https://registry.npmmirror.com') \
+        playwright
+
+    # 下载文件
+    # shellcheck disable=SC2154
+    wget "$confhome/download-via-browser.js" -O "$os_dir/work/download-via-browser.js"
+    retry 5 chroot "$os_dir" node /work/download-via-browser.js "$url" "/work/download_file"
+    cp "$os_dir/work/download_file" "$path"
+
+    # 清理
+    umount_pseudo_fs "$os_dir"
+    rm -rf "$os_dir"
 }
 
 download() {
@@ -239,13 +296,13 @@ download() {
 
     if ! aria2c "$url" "$@" &&
         ! { $can_use_cn_mirror && is_in_china && is_any_ipv4_has_internet &&
-            url_cn=https://files.m.daocloud.io/$(echo "$url" | sed -Ei 's,^https?://,,') &&
+            url_cn=https://files.m.daocloud.io/$(echo "$url" | sed -E 's,^https?://,,i') &&
             aria2c "$url_cn" "$@"; }; then
         error_and_exit "Failed to download $url"
     fi
 
     # opensuse 官方镜像支持 metalink
-    # aira2 无法重命名用 metalink 下载的文件
+    # aria2 无法重命名用 metalink 下载的文件
     # 需用以下方法重命名
     if head -c 1024 "$path" | grep -Fq 'urn:ietf:params:xml:ns:metalink'; then
         real_file=$(tr -d '\n' <"$path" | sed -E 's|.*<file[[:space:]]+name="([^"]*)".*|\1|')
@@ -4872,7 +4929,7 @@ EOF
 }
 
 install_fnos() {
-    info "Install fnos"
+    info "Install fnos/fygoos"
     os_dir=/os
 
     # 官方安装调用流程
@@ -4925,7 +4982,7 @@ install_fnos() {
     fi
 
     # 复制系统
-    info "Extract fnos"
+    info "Extract fnos/fygoos"
     apk add tar gzip pv
     pv -f /os/installer/trimfs.tgz | tar zxp --numeric-owner --xattrs-include='*.*' -C /os
     apk del tar gzip pv
@@ -4935,7 +4992,7 @@ install_fnos() {
 
     # 缩小分区
     if $NEED_SHRINK_FNOS_OS_PART; then
-        info "Shrink fnos os partition"
+        info "Shrink fnos/fygoos os partition"
 
         # 取消挂载
         if is_efi; then
@@ -5019,8 +5076,18 @@ install_fnos() {
     fi
 
     # grub 配置
-    # 取自 strings trim-install | grep GRUB_DISTRIBUTOR
-    sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="FNOS"/' $os_dir/etc/default/grub
+    # strings trim-install | grep GRUB_DISTRIBUTOR
+    # 国内版得到的是 sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="FNOS"/' /mnt/rootfs/etc/default/grub
+    # 国际版得到的是 sed -i 's/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR="%s"/' /mnt/rootfs/etc/default/grub
+    # 因此这里写死
+    if grep -Fq fygonas.com $os_dir/etc/apt/sources.list.d/trim_repo.list; then
+        name_for_grub=FygoOS
+    elif grep -Fq fnnas.com $os_dir/etc/apt/sources.list.d/trim_repo.list; then
+        name_for_grub=FNOS
+    else
+        error_and_exit 'Can not detect FNOS/FygoOS.'
+    fi
+    sed -i "s/^GRUB_DISTRIBUTOR=.*/GRUB_DISTRIBUTOR=\"$name_for_grub\"/" $os_dir/etc/default/grub
 
     # grub tty
     ttys_cmdline=$(get_ttys console=)
@@ -6857,7 +6924,8 @@ install_windows() {
         )
 
         # 注意 intel 禁止了 aria2 下载
-        download "$url" $drv/intel.zip true
+        # 还使用了 aws waf，要用浏览器通过 js 获取 aws-waf-token cookie 才能下载
+        download_via_browser "$url" $drv/intel.zip
 
         # inf 可能是 UTF-16 LE？因此用 rg 搜索
         # 用 busybox unzip 解压 win10 驱动时，路径和文件名会粘在一起
@@ -7590,7 +7658,7 @@ EOF
             url=$(get_intel_download_url "$id" "SetupRST\.exe")
 
             # 注意 intel 禁止了 aria2 下载
-            download $url $drv/SetupRST.exe true
+            download_via_browser $url $drv/SetupRST.exe
             apk add 7zip
             7z x $drv/SetupRST.exe -o$drv/SetupRST -i!.text
             7z x $drv/SetupRST/.text -o$drv/vmd
