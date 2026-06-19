@@ -1633,6 +1633,17 @@ install_alpine() {
 
     mount_pseudo_fs /os
 
+    # azure nvme 实例的 initramfs 需要添加 pci_hyperv 驱动
+    if [ -d /sys/module/pci_hyperv ] &&
+        get_drivers "/sys/block/$xda" | grep -qx pci_hyperv; then
+        echo 'kernel/drivers/pci/controller/pci-hyperv.ko*' >/os/etc/mkinitfs/features.d/pci-hyperv.modules
+        if ! grep -q 'pci-hyperv' /os/etc/mkinitfs/mkinitfs.conf; then
+            # 找到 features=" 开头的行，将最后的"改成 pci-hyperv"
+            sed -i '/features="/s/"$/ pci-hyperv"/' /os/etc/mkinitfs/mkinitfs.conf
+        fi
+        chroot /os mkinitfs -k "$(basename /os/lib/modules/*-*)"
+    fi
+
     # 安装到硬盘后才安装各种应用
     # 避免占用 Live OS 内存
 
@@ -3333,7 +3344,7 @@ download_cloud_init_config() {
     recognize_ipv6_types=$3
 
     ci_file=$os_dir/etc/cloud/cloud.cfg.d/99_fallback.cfg
-    download $confhome/cloud-init.yaml $ci_file
+    download $confhome/deprecated/cloud-init.yaml $ci_file
     # 删除注释行，除了第一行
     sed -i '1!{/^[[:space:]]*#/d}' $ci_file
 
@@ -3803,7 +3814,7 @@ modify_linux() {
         for ethx in $(get_eths); do
             if is_staticv4 || is_staticv6; then
                 fix_sh=cloud-init-fix-onlink.sh
-                download "$confhome/$fix_sh" "$os_dir/$fix_sh"
+                download "$confhome/deprecated/$fix_sh" "$os_dir/$fix_sh"
                 insert_into_file "$ci_file" after '^runcmd:' <<EOF
   - bash "/$fix_sh" && rm -f "/$fix_sh"
 EOF
