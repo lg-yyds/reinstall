@@ -1646,21 +1646,33 @@ Continue with DD?
         done
 
         if [ -z "$iso" ]; then
+            local download_page sign_page
             if [ "$FLYGOOS" = 1 ]; then
-                iso=$(curl -L "https://fygonas.com/download" |
-                    grep -o 'https://[^"]*\.iso' | head -1 | grep .)
+                download_page=https://fygonas.com/download
+                # sign_page=https://fygonas.com/asset/download-sign
             else
-                # 对于同一行有多个成功匹配，grep -m1 无效
-                iso=$(curl -L "https://fnnas.com/download$([ "$basearch" = aarch64 ] && echo -arm)" |
-                    grep -o 'https://[^"]*\.iso' | head -1 | grep .)
+                download_page=https://fnnas.com/download$([ "$basearch" = aarch64 ] && echo -arm || true)
+                sign_page=https://fnnas.com/asset/download-sign
+            fi
 
+            # fnos_Mainland-PE_x86_1.2.0203_2149.iso
+            # fnos_Mainland-PE_arm_1.1.31_armsr_1366.iso
+            # fygoos_PE_x86_1.2.0203_2150.iso
+            # fygoos_PE_arm_1.2.0007_armsr_1837.iso
+
+            # 对于同一行有多个成功匹配，grep -m1 无效
+            iso=$(curl -L "$download_page" | grep -o 'https://[^"]*\.iso' |
+                grep "$([ "$basearch" = aarch64 ] && echo _armsr_ || echo _x86_)" |
+                head -1 | grep .)
+
+            if [ -n "$sign_page" ]; then
                 # curl 7.82.0+
-                # curl -L --json '{"url":"'$iso'"}' https://www.fnnas.com/api/download-sign
+                # curl -L --json '{"url":"'$iso'"}' https://fnnas.com/asset/download-sign
 
                 iso=$(curl -L \
                     -d '{"url":"'$iso'"}' \
                     -H 'Content-Type: application/json' \
-                    https://www.fnnas.com/api/download-sign |
+                    "$sign_page" |
                     grep -o 'https://[^"]*')
             fi
         fi
@@ -2188,21 +2200,19 @@ install_pkg() {
     }
 
     is_need_reinstall() {
-        cmd=$1
+        local cmd=$1
 
         # gentoo 默认编译的 unsquashfs 不支持 xz
-        if [ "$cmd" = unsquashfs ] && is_have_cmd emerge && ! $cmd |& grep -wq xz; then
+        if [ "$cmd" = unsquashfs ] && is_have_cmd emerge && ! "$cmd" |& grep -wq xz; then
             echo "unsquashfs not supported xz. rebuilding."
             return 0
         fi
 
+        # busybox grep  不支持 -oP
+        # busybox lsblk 不支持 -r -n --inverse
         # busybox fdisk 无法显示 mbr 分区表的 id
-        if [ "$cmd" = fdisk ] && is_have_cmd apk && $cmd |& grep -wq BusyBox; then
-            return 0
-        fi
-
-        # busybox grep 不支持 -oP
-        if [ "$cmd" = grep ] && is_have_cmd apk && $cmd |& grep -wq BusyBox; then
+        if { [ "$cmd" = grep ] || [ "$cmd" = lsblk ] || [ "$cmd" = fdisk ]; } &&
+            is_have_cmd apk && "$cmd" --help |& grep -wq BusyBox; then
             return 0
         fi
 
