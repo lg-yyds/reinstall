@@ -119,7 +119,10 @@ Usage: $reinstall_____ anolis      7|8|23
                        [--rdp-port    PORT]
                        [--add-driver  INF_OR_DIR]
 
-Manual: https://github.com/bin456789/reinstall
+                       For Linux Only:
+                       [--no-cloud-kernel]  (Debian/Ubuntu/Alpine)
+
+       Manual:         https://github.com/bin456789/reinstall
 
 EOF
     exit 1
@@ -1470,11 +1473,19 @@ Continue?
             # cloud.debian.org 同样在瑞典，不是 cdn
         fi
 
-        is_virt && flavour=-cloud || flavour=
-        # debian 10 云内核 vultr efi vnc 没有显示
-        [ "$releasever" -le 10 ] && flavour=
-        # 甲骨文 arm64 cloud 内核 vnc 没有显示
-        [ "$basearch_alt" = arm64 ] && flavour=
+        # kernel
+        if [ "$no_cloud_kernel" = 1 ]; then
+            flavour=
+        else
+            is_virt && flavour=-cloud || flavour=
+
+            # debian 10 云内核 vultr efi vnc 没有显示
+            # 现在改成手动 --no-cloud-kernel 规避
+            # [ "$releasever" -le 10 ] && flavour=
+
+            # 甲骨文 arm64 cloud 内核 vnc 没有显示
+            [ "$basearch_alt" = arm64 ] && flavour=
+        fi
 
         if is_use_cloud_image; then
             # cloud image
@@ -3526,7 +3537,7 @@ build_extra_cmdline() {
     # 会将 extra.xxx=yyy 写入新系统的 /etc/modprobe.d/local.conf
     # https://answers.launchpad.net/ubuntu/+question/249456
     # https://salsa.debian.org/installer-team/rootskel/-/blob/master/src/lib/debian-installer-startup.d/S02module-params?ref_type=heads
-    for key in confhome hold force_boot_mode force_cn force_old_windows_setup cloud_image main_disk \
+    for key in confhome hold force_boot_mode force_cn force_old_windows_setup cloud_image no_cloud_kernel main_disk \
         elts deb_mirror \
         username ssh_port rdp_port web_port web_path allow_ping; do
         value=${!key}
@@ -4762,7 +4773,7 @@ fi
 
 # 整理参数
 long_opts=
-for o in ci installer debug minimal allow-ping force-cn help \
+for o in ci installer debug minimal no-cloud-kernel allow-ping force-cn help \
     add-driver: \
     hold: sleep: \
     iso: \
@@ -4856,6 +4867,10 @@ while true; do
         ;;
     --minimal)
         minimal=1
+        shift
+        ;;
+    --no-cloud-kernel)
+        no_cloud_kernel=1
         shift
         ;;
     --allow-ping)

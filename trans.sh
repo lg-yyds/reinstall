@@ -1613,11 +1613,16 @@ install_alpine() {
         rc-update add acpid
     fi
 
-    # 如果是 vm 就用 virt 内核
-    if is_virt; then
-        kernel_flavor="virt"
+    # 内核
+    # shellcheck disable=SC2154
+    if [ "$no_cloud_kernel" = 1 ]; then
+        kernel_flavor=lts
     else
-        kernel_flavor="lts"
+        if is_virt; then
+            kernel_flavor=virt
+        else
+            kernel_flavor=lts
+        fi
     fi
 
     # 重置为官方仓库配置
@@ -8306,6 +8311,13 @@ get_ubuntu_kernel_flavor() {
     # https://github.com/canonical/cloud-init/blob/main/tools/ds-identify
     # http://git.annexia.org/?p=virt-what.git;a=blob;f=virt-what.in;hb=HEAD
 
+    is_ubuntu_lts && suffix=-hwe-$releasever || suffix=
+
+    if [ "$no_cloud_kernel" = 1 ]; then
+        echo generic$suffix
+        return
+    fi
+
     # 这里有坑
     # $(get_cloud_vendor) 调用了 cache_dmi_and_virt
     # 但是 $(get_cloud_vendor) 运行在 subshell 里面
@@ -8316,7 +8328,6 @@ get_ubuntu_kernel_flavor() {
     case "$vendor" in
     aws | gcp | oracle | azure | ibm) echo $vendor ;;
     *)
-        is_ubuntu_lts && suffix=-hwe-$releasever || suffix=
         if is_virt; then
             echo virtual$suffix
         else
