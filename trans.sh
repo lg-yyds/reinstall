@@ -1736,9 +1736,12 @@ install_alpine() {
         chroot /os apk add frp
         # chroot rc-update add 默认添加到 sysinit
         # 但不加 chroot 默认添加到 default
-        chroot /os rc-update add frpc boot
-        cp -f /configs/frpc.* /os/etc/frp/
-        chmod 600 /os/etc/frp/frpc.*
+        chroot /os rc-update add frpc default
+
+        # 固定为 toml
+        # 这样就不用在 /etc/init.d/frpc drop-in 修改 cfgfile
+        cp -f /configs/frpc.* /os/etc/frp/frpc.toml
+        chmod 600 /os/etc/frp/frpc.toml
     fi
 
     # setup-disk 会自动选择固件，但不包括微码？
@@ -2054,6 +2057,8 @@ EOF
                 cp /configs/frpc.* /os/etc/nixos/
                 chmod 600 /os/etc/nixos/frpc.*
                 ext=$(basename /configs/frpc.* | awk -F. '{print $NF}')
+                # 默认已经开了 DynamicUser = true;
+                # https://github.com/NixOS/nixpkgs/blob/nixos-26.05/nixos/modules/services/networking/frp.nix
                 cat <<EOF
 services.frp = {
   enable = true;
@@ -2167,8 +2172,13 @@ EOF
 add_systemd_service() {
     local os_dir=$1
     local service_name=$2
+    local service_file=$3
 
-    download "$confhome/$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
+    if [ -n "$service_file" ]; then
+        cp "$service_file" "$os_dir/etc/systemd/system/$service_name.service"
+    else
+        download "$confhome/$service_name.service" "$os_dir/etc/systemd/system/$service_name.service"
+    fi
     chroot "$os_dir" systemctl enable "$service_name.service"
 
     # aosc 首次开机会执行 preset-all
@@ -2215,12 +2225,27 @@ add_frpc_systemd_service_if_need() {
         rm -f "$os_dir/frpc.tar.gz"
         chmod a+x "$os_dir/usr/local/bin/frpc"
 
-        # frpc conf
-        cp -f /configs/frpc.* "$os_dir/usr/local/etc/frpc/"
-        chmod 600 $os_dir/usr/local/etc/frpc/frpc.*
+        # frpc toml
+        cp -f /configs/frpc.* "$os_dir/usr/local/etc/frpc/frpc.toml"
+        download "$confhome/frpc.service" /tmp/frpc.service
+        if [ "$(chroot $os_dir systemctl --version | head -1 | awk '{print $2}')" -ge 247 ]; then
+            # 新版本 systemd
+            sed -i 's/^\[X-Service-New\]$/[Service]/' /tmp/frpc.service
+            chroot "$os_dir" chown root:root /usr/local/etc/frpc/frpc.toml
+            chroot "$os_dir" chmod 600 /usr/local/etc/frpc/frpc.toml
+        else
+            # 旧版本 systemd
+            sed -i 's/^\[X-Service-Old\]$/[Service]/' /tmp/frpc.service
+            chroot "$os_dir" useradd --system --no-create-home \
+                --home-dir /nonexistent \
+                --shell /sbin/nologin \
+                frpc
+            chroot "$os_dir" chown root:frpc /usr/local/etc/frpc/frpc.toml
+            chroot "$os_dir" chmod 640 /usr/local/etc/frpc/frpc.toml
+        fi
 
         # 添加服务
-        add_systemd_service "$os_dir" frpc
+        add_systemd_service "$os_dir" frpc /tmp/frpc.service
     fi
 }
 
@@ -6921,6 +6946,14 @@ install_windows() {
         drv=/os/drivers
         mkdir_clear "$drv"
 
+        # 自定义驱动
+        add_driver_custom
+
+        # shellcheck disable=SC2154
+        if [ "$no_auto_drivers" = 1 ]; then
+            return
+        fi
+
         # 这里有坑
         # $(get_cloud_vendor) 调用了 cache_dmi_and_virt
         # 但是 $(get_cloud_vendor) 运行在 subshell 里面
@@ -7026,9 +7059,6 @@ install_windows() {
             grep -iq 8086 /sys/class/net/e*/device/vendor; then
             add_driver_intel_nic
         fi
-
-        # 自定义驱动
-        add_driver_custom
     }
 
     add_driver_intel_nic() {
@@ -8305,8 +8335,6 @@ get_ubuntu_kernel_flavor() {
     # linux-image-virtual = linux-image-6.x-generic
     # linux-image-generic = linux-image-6.x-generic + amd64-microcode + intel-microcode + linux-firmware + linux-modules-extra-generic
 
-    # TODO: ISO virtual-hwe-24.04 不安装 linux-image-extra-virtual-hwe-24.04 不然会花屏
-
     # https://github.com/systemd/systemd/blob/main/src/basic/virt.c
     # https://github.com/canonical/cloud-init/blob/main/tools/ds-identify
     # http://git.annexia.org/?p=virt-what.git;a=blob;f=virt-what.in;hb=HEAD
@@ -8326,9 +8354,14 @@ get_ubuntu_kernel_flavor() {
     cache_dmi_and_virt
     vendor="$(get_cloud_vendor)"
     case "$vendor" in
-    aws | gcp | oracle | azure | ibm) echo $vendor ;;
+    aws | gcp | oracle | azure | ibm)
+        echo $vendor
+        ;;
     *)
-        if is_virt; then
+        # 20.04 后才有
+        if is_virt_contains vmware && [ "$releasever" != 18.04 ]; then
+            echo vmware$suffix
+        elif is_virt; then
             echo virtual$suffix
         else
             echo generic$suffix
