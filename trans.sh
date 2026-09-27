@@ -6500,7 +6500,7 @@ get_drivers() {
 }
 
 is_xda_non_standard_virtio_scsi() {
-    get_drivers "$xda" | grep -q virtio_scsi &&
+    get_drivers "/sys/class/block/$xda" | grep -q virtio_scsi &&
         device_path="$(readlink -f "/sys/class/block/$xda" | sed 's,/virtio.*,,')" &&
         [ -e "$device_path/subsystem_vendor" ] &&
         ! [ "$(cat "$device_path/subsystem_vendor")" = 0x1af4 ]
