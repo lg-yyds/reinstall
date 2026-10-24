@@ -2341,8 +2341,18 @@ install_arch_gentoo_aosc() {
     )
 
     set_locale() {
-        echo "C.UTF-8 UTF-8" >>$os_dir/etc/locale.gen
+        # 如果存在注释/非注释的 en_US.UTF-8 UTF-8
+        # 则取消注释
+        if grep -Eq '^[# ]*en_US\.UTF-8 UTF-8' $os_dir/etc/locale.gen; then
+            sed -Ei 's/^[# ]*en_US\.UTF-8 UTF-8/en_US.UTF-8 UTF-8/' $os_dir/etc/locale.gen
+        else
+            echo 'en_US.UTF-8 UTF-8' >>$os_dir/etc/locale.gen
+        fi
         chroot $os_dir locale-gen
+
+        # chroot $os_dir localectl set-locale en_US.UTF-8
+        # chroot $os_dir systemd-firstboot --locale=en_US.UTF-8 --force
+        echo 'LANG=en_US.UTF-8' >$os_dir/etc/locale.conf
     }
 
     # shellcheck disable=SC2317
@@ -2367,7 +2377,7 @@ install_arch_gentoo_aosc() {
 
         # 设置 repo
         insert_into_file $alpine_rootfs/etc/pacman.conf before '\[core\]' <<EOF
-SigLevel = Never
+SigLevel = Required DatabaseOptional
 ParallelDownloads = 5
 EOF
         cat <<EOF >>$alpine_rootfs/etc/pacman.conf
@@ -2380,11 +2390,46 @@ EOF
         mkdir -p $alpine_rootfs/etc/pacman.d
         # shellcheck disable=SC2016
         case "$(uname -m)" in
-        x86_64) dir='$repo/os/$arch' ;;
-        aarch64) dir='$arch/$repo' ;;
+        x86_64) repo_pattem='$repo/os/$arch' ;;
+        aarch64) repo_pattem='$arch/$repo' ;;
         esac
-        # shellcheck disable=SC2154
-        echo "Server = $mirror/$dir" >$alpine_rootfs/etc/pacman.d/mirrorlist
+        echo "Server = $mirror/$repo_pattem" >$alpine_rootfs/etc/pacman.d/mirrorlist
+
+        # 下载 core.db
+        core_dir=$(echo "$repo_pattem" | sed -e "s/\$repo/core/" -e "s/\$arch/$(uname -m)/")
+        download $mirror/$core_dir/core.db $alpine_rootfs/tmp/core.db
+
+        # 下载 archlinux-keyring archlinuxarm-keyring 包
+        # arch x86 是 tar.zst
+        # arch arm 是 tar.xz
+        xz_or_zstd=$([ "$(uname -m)" = aarch64 ] && echo xz || echo zstd)
+        apk add tar file $xz_or_zstd
+
+        keyrings=archlinux-keyring
+        if [ "$(uname -m)" = aarch64 ]; then
+            keyrings="$keyrings archlinuxarm-keyring"
+        fi
+
+        for keyring in $keyrings; do
+            # 找到包名
+            keyring_pkg_tar_xx=$(tar -xf $alpine_rootfs/tmp/core.db -O --wildcards "$keyring-*/desc" |
+                grep "^$keyring-.*-any\.pkg\.tar\..*" | sort -Vr | head -1)
+
+            # 下载并解压
+            download $mirror/$core_dir/$keyring_pkg_tar_xx $alpine_rootfs/tmp/$keyring_pkg_tar_xx
+            tar -xf $alpine_rootfs/tmp/$keyring_pkg_tar_xx \
+                -C $alpine_rootfs \
+                usr/share/pacman/keyrings/
+            rm -f $alpine_rootfs/tmp/$keyring_pkg_tar_xx
+        done
+
+        # 清理
+        rm -f $alpine_rootfs/tmp/core.db
+        apk del tar file $xz_or_zstd
+
+        # 初始化 pacman keyring
+        chroot $alpine_rootfs pacman-key --init
+        chroot $alpine_rootfs pacman-key --populate
 
         # 安装系统
         # 要安装分区工具(包含 fsck.xxx)，用于 initramfs 检查分区数据
@@ -2432,9 +2477,6 @@ EOF
         # bsdtar: bsdtar: Failed to set default locale
         # Failed to set default locale
         set_locale
-        if [ "$(uname -m)" = aarch64 ]; then
-            chroot $os_dir pacman-key --lsign-key builder@archlinuxarm.org
-        fi
 
         # firmware + microcode
         if fw_pkgs=$(get_ucode_firmware_pkgs) && [ -n "$fw_pkgs" ]; then
@@ -2935,6 +2977,11 @@ create_part() {
     wipefs -a -f /dev/$xda
     apk del wipefs
 
+    # 下面用 dd 擦除 bios_grub 分区
+    # 因为硬盘同时存在 efi bios_grub 分区时
+    # efi 平台没用到 bios_grub 分区
+    # 不擦除 bios_grub 分区的话，parted 会显示残留的文件系统签名
+
     # shellcheck disable=SC2154
     if [ "$distro" = windows ]; then
         if ! size_bytes=$(get_link_file_size "$iso"); then
@@ -3056,8 +3103,8 @@ create_part() {
                 set 1 bios_grub on
             update_part
 
-            echo                                    #1 bios_boot
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
+            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=100 #1 bios_grub
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)"            #2 os + installer
         else
             # bios
             parted /dev/$xda -s -- \
@@ -3067,8 +3114,8 @@ create_part() {
                 set 2 boot on
             update_part
 
-            echo                                    #1 官方安装有这个分区
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
+            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=100 #1 官方安装有这个分区
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)"            #2 os + installer
         fi
     elif is_use_cloud_image; then
         installer_part_size="$(get_cloud_image_part_size)"
@@ -3100,9 +3147,9 @@ create_part() {
                     set 1 bios_grub on
                 update_part
 
-                echo                                      #1 bios_boot
-                echo                                      #2 os 用目标系统的格式化工具
-                mkfs.ext4 -F -L installer "/dev/$(xda 3)" #3 installer
+                dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=1 #1 bios_grub
+                echo                                             #2 os 用目标系统的格式化工具
+                mkfs.ext4 -F -L installer "/dev/$(xda 3)"        #3 installer
             fi
         else
             # 使用 dd qcow2
@@ -3142,8 +3189,8 @@ create_part() {
                 set 1 bios_grub on
             update_part
 
-            echo                                    #1 bios_boot
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os
+            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=1 #1 bios_grub
+            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)"          #2 os
         else
             # bios
             parted /dev/$xda -s -- \
@@ -3155,7 +3202,7 @@ create_part() {
             mkfs.ext4 -F $ext4_opts "/dev/$(xda 1)" #1 os
         fi
     else
-        # 安装红帽系或ubuntu
+        # iso 安装红帽系或ubuntu
         # 对于红帽系是临时分区表，安装时除了 installer 分区，其他分区会重建为默认的大小
         # 对于ubuntu是最终分区表，因为 ubuntu 的安装器不能调整个别分区，只能重建整个分区表
         # installer 2g分区用fat格式刚好塞得下ubuntu-22.04.3 iso，而ext4塞不下或者需要改参数
@@ -3198,7 +3245,7 @@ create_part() {
                 set 1 bios_grub on
             update_part
 
-            echo                                                 #1 bios_boot
+            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=1     #1 bios_grub
             mkfs.ext4 -F -L os "/dev/$(xda 2)"                   #2 os
             mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 3)" #3 installer
         else
@@ -8458,10 +8505,10 @@ get_ubuntu_kernel_flavor() {
     # https://github.com/canonical/cloud-init/blob/main/tools/ds-identify
     # http://git.annexia.org/?p=virt-what.git;a=blob;f=virt-what.in;hb=HEAD
 
-    is_ubuntu_lts && suffix=-hwe-$releasever || suffix=
+    is_ubuntu_lts && hwe_suffix=-hwe-$releasever || hwe_suffix=
 
     if [ "$no_cloud_kernel" = 1 ]; then
-        echo generic$suffix
+        echo generic$hwe_suffix
         return
     fi
 
@@ -8486,9 +8533,9 @@ get_ubuntu_kernel_flavor() {
         if is_virt_contains vmware && [ "$releasever" = 24.04 ] && [ "$(uname -m)" = x86_64 ]; then
             echo vmware
         elif is_virt; then
-            echo virtual$suffix
+            echo virtual$hwe_suffix
         else
-            echo generic$suffix
+            echo generic$hwe_suffix
         fi
         ;;
     esac
@@ -8553,12 +8600,13 @@ set_max_sectors_kb_for_tencent_cloud_persist() {
         create_swap_if_ram_less_than 2048 $os_dir/swapfile
 
         # 重新生成 initramfs
-        # el
-        if is_have_cmd_on_disk $os_dir dracut; then
-            chroot $os_dir dracut -f --regenerate-all
         # debian/ubuntu
-        elif is_have_cmd_on_disk $os_dir update-initramfs; then
+        # 新版本 ubuntu 用的是 dracut，也有 update-initramfs 作为 wrapper
+        if is_have_cmd_on_disk $os_dir update-initramfs; then
             chroot $os_dir update-initramfs -u -k all
+        # el
+        elif is_have_cmd_on_disk $os_dir dracut; then
+            chroot $os_dir dracut -f --regenerate-all
         # arch
         elif is_have_cmd_on_disk $os_dir mkinitcpio; then
             echo 'FILES+=(/etc/udev/rules.d/80-max-sectors-blk.rules)' \
