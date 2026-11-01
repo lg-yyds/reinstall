@@ -294,10 +294,21 @@ download_via_browser() {
     remove_alpine_rootfs "$os_dir"
 }
 
+get_daocloud_url() {
+    local url=$1
+    echo "https://files.m.daocloud.io/$(echo "$url" | sed -E 's,^https?://,,i')"
+}
+
+is_anubis() {
+    [ -f "$1" ] &&
+        head -c 10240 "$1" | grep -Fiq anubis
+}
+
 download() {
     local url=$1
     local path=$2
     local can_use_cn_mirror=${3:-false}
+    local grace=${4:-false}
 
     # 有ipv4地址无ipv4网关的情况下，aria2可能会用ipv4下载，而不是ipv6
     # axel 在 lightsail 上会占用大量cpu
@@ -342,19 +353,50 @@ download() {
         -O "1=$(basename "$path")" \
         -U curl/7.54.1
 
-    if ! aria2c "$url" "$@" &&
-        ! { $can_use_cn_mirror && is_in_china && is_any_ipv4_has_internet &&
-            url_cn=https://files.m.daocloud.io/$(echo "$url" | sed -E 's,^https?://,,i') &&
-            aria2c "$url_cn" "$@"; }; then
-        error_and_exit "Failed to download $url"
+    local download_success=false
+    local is_in_anubis_blacklist=false
+
+    # 直接下载
+    if aria2c "$url" "$@"; then
+        # 被挡住时，下载了 anubis html 页面
+        if is_anubis "$path"; then
+            # 完全屏蔽，例如华为云
+            if grep -iq 'Access Denied' "$path"; then
+                is_in_anubis_blacklist=true
+                warn "IP in anubis blacklist"
+            fi
+            rm -rf "$path"
+        else
+            download_success=true
+        fi
     fi
 
-    # opensuse 官方镜像支持 metalink
-    # aria2 无法重命名用 metalink 下载的文件
-    # 需用以下方法重命名
-    if head -c 1024 "$path" | grep -Fq 'urn:ietf:params:xml:ns:metalink'; then
-        real_file=$(tr -d '\n' <"$path" | sed -E 's|.*<file[[:space:]]+name="([^"]*)".*|\1|')
-        mv "$(dirname "$path")/$real_file" "$path"
+    # daocloud 镜像
+    if ! $download_success && $can_use_cn_mirror &&
+        aria2c "$(get_daocloud_url "$url")" "$@" &&
+        ! is_anubis "$path"; then
+        download_success=true
+    fi
+
+    if $download_success; then
+        # opensuse 官方镜像支持 metalink
+        # aria2 无法重命名用 metalink 下载的文件
+        # 需用以下方法重命名
+        if head -c 1024 "$path" | grep -Fq 'urn:ietf:params:xml:ns:metalink'; then
+            real_file=$(tr -d '\n' <"$path" | sed -E 's|.*<file[[:space:]]+name="([^"]*)".*|\1|')
+            mv "$(dirname "$path")/$real_file" "$path"
+        fi
+    else
+        rm -f "$path"
+        if $grace; then
+            if $is_in_anubis_blacklist; then
+                return 10
+            else
+                return 1
+            fi
+        else
+            error_and_exit "Failed to download $url"
+        fi
     fi
 }
 
@@ -362,6 +404,10 @@ update_part() {
     sleep 1
     sync
     sleep 1
+
+    # mkfs.ntfs 有坑，在同一秒 mkfs.ntfs 生成的 uuid 一样
+    # lsblk 也有坑，格式化后立即查看分区 uuid ，可能显示格式化前的 uuid
+    # mkfs.ntfs -f -F /dev/vda1; mkfs.ntfs -f -F /dev/vda2; lsblk -f; sleep 3; lsblk -f
 
     # partprobe
     # 有分区挂载中会报 Resource busy 错误
@@ -1623,7 +1669,7 @@ install_alpine() {
     # bios机器用 setup-disk 自动分区会有 boot 分区
     # 因此手动分区安装
     create_part
-    mount_part_basic_layout /os /os/boot/efi
+    mount_part_basic_layout /os /os/boot/efi ext4
 
     # 创建 swap
     if $hack_lowram; then
@@ -1744,7 +1790,7 @@ install_alpine() {
 
     # 安装其他部件
     chroot /os setup-keymap us us
-    chroot /os setup-timezone -i Asia/Shanghai
+    chroot /os setup-timezone -i Etc/UTC
     # 3.21 默认是 chrony
     # 3.22 默认是 busybox ntp
     printf '\n' | chroot /os setup-ntp || true
@@ -2313,15 +2359,15 @@ basic_init() {
     local os_dir=$1
 
     # 此时不能用
-    # chroot $os_dir timedatectl set-timezone Asia/Shanghai
+    # chroot $os_dir timedatectl set-timezone Etc/UTC
     # Failed to create bus connection: No such file or directory
 
     # debian 11 没有 systemd-firstboot
     if is_have_cmd_on_disk $os_dir systemd-firstboot; then
         if chroot $os_dir systemd-firstboot --help | grep -wq '\--force'; then
-            chroot $os_dir systemd-firstboot --timezone=Asia/Shanghai --force
+            chroot $os_dir systemd-firstboot --timezone=Etc/UTC --force
         else
-            chroot $os_dir systemd-firstboot --timezone=Asia/Shanghai
+            chroot $os_dir systemd-firstboot --timezone=Etc/UTC
         fi
     fi
 
@@ -2991,7 +3037,11 @@ is_ends_with_digit() {
     [[ "$1" =~ [0-9]$ ]]
 }
 
-xda() {
+is_digit() {
+    [[ "$1" =~ ^[0-9]+$ ]]
+}
+
+_xda() {
     if [ -n "$1" ]; then
         if is_ends_with_digit "$xda"; then
             echo "${xda}p$1"
@@ -3001,6 +3051,29 @@ xda() {
     else
         echo "$xda"
     fi
+}
+
+xda() {
+    # 传进来的是空值或 1 2 3 等
+    if [ -z "$1" ] || is_digit "$1"; then
+        _xda "$1"
+    else
+        # 传进来的是 efi os installer 等
+        local dev_num
+        if dev_num=$(eval echo "\$dev_$1" | grep -Eo '[0-9]+$'); then
+            _xda "$dev_num"
+        else
+            error_and_exit "Cannot find device number for $1"
+        fi
+    fi
+}
+
+fill_zero() {
+    local dev=$1
+
+    local bytes
+    bytes=$(blockdev --getsize64 "$dev")
+    head -c "$bytes" /dev/zero >"$dev"
 }
 
 create_part() {
@@ -3056,10 +3129,10 @@ create_part() {
                 set 3 msftdata on
             update_part
 
-            mkfs.fat -n efi "/dev/$(xda 1)"                   #1 efi
-            dd if=/dev/zero of="/dev/$(xda 2)" bs=1M count=16 #2 msr
-            mkfs.ntfs -f -F -L os "/dev/$(xda 3)"             #3 os
-            mkfs.ntfs -f -F -L installer "/dev/$(xda 4)"      #4 installer
+            dev_efi="/dev/$(xda 1)"       #1 efi
+            dev_msr="/dev/$(xda 2)"       #2 msr
+            dev_os="/dev/$(xda 3)"        #3 os
+            dev_installer="/dev/$(xda 4)" #4 installer
         else
             # bios + mbr 启动盘最大可用 2t
             if is_xda_gt_2t; then
@@ -3074,11 +3147,20 @@ create_part() {
                 mkpart primary ntfs 1MiB ${border} \
                 mkpart primary ntfs ${border} ${max_usable_size} \
                 set 1 boot on
-            update_part
 
-            mkfs.ntfs -f -F -L os "/dev/$(xda 1)"        #1 os
-            mkfs.ntfs -f -F -L installer "/dev/$(xda 2)" #2 installer
+            dev_os="/dev/$(xda 1)"        #1 os
+            dev_installer="/dev/$(xda 2)" #2 installer
         fi
+
+        # diskpart 分区名称只可以显示 11 个字符
+        INSTALLER_PART_LABEL="inst_$(tr -dc "a-z0-9" </dev/urandom | head -c4)"
+
+        update_part
+        [ -n "$dev_efi" ] && mkfs.fat "$dev_efi"                    # efi
+        [ -n "$dev_msr" ] && fill_zero "$dev_msr"                   # msr
+        mkfs.ntfs -f -F "$dev_os"                                   # os
+        sleep 1                                                     # 在同一秒 mkfs.ntfs 生成的 uuid 一样
+        mkfs.ntfs -f -F -L "$INSTALLER_PART_LABEL" "$dev_installer" # installer
     elif [ "$distro" = fnos ]; then
         # 1. 官方安装器对系统盘大小的定义包含引导分区大小
         # 2. 官方 efi 用的是 1MiB-100M，但我们用 1MiB-101MiB
@@ -3131,10 +3213,10 @@ create_part() {
                 mkpart BOOT fat32 1MiB 101MiB \
                 mkpart SYSTEM ext4 101MiB 100% \
                 set 1 esp on
-            update_part
 
-            mkfs.fat "/dev/$(xda 1)"                #1 efi
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os + installer
+            dev_efi="/dev/$(xda 1)" #1 efi
+            dev_os="/dev/$(xda 2)"  #2 os + installer
+
         elif is_xda_gt_2t; then
             # bios > 2t
             # 官方安装器是 mkpart BOOT 1M 100M，无论 esp 或者 bios_grub 都用这个分区和大小
@@ -3143,10 +3225,10 @@ create_part() {
                 mkpart BOOT ext4 1MiB 101MiB \
                 mkpart SYSTEM ext4 101MiB 100% \
                 set 1 bios_grub on
-            update_part
 
-            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=100 #1 bios_grub
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)"            #2 os + installer
+            dev_grub="/dev/$(xda 1)" #1 bios_grub
+            dev_os="/dev/$(xda 2)"   #2 os + installer
+
         else
             # bios
             parted /dev/$xda -s -- \
@@ -3154,11 +3236,16 @@ create_part() {
                 mkpart primary 1MiB 101MiB \
                 mkpart primary 101MiB 100% \
                 set 2 boot on
-            update_part
 
-            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=100 #1 官方安装有这个分区
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)"            #2 os + installer
+            dev_empty="/dev/$(xda 1)" #1 官方安装有这个分区
+            dev_os="/dev/$(xda 2)"    #2 os + installer
         fi
+
+        update_part
+        [ -n "$dev_efi" ] && mkfs.fat "$dev_efi"      # efi
+        [ -n "$dev_grub" ] && fill_zero "$dev_grub"   # bios_grub
+        [ -n "$dev_empty" ] && fill_zero "$dev_empty" # 官方安装有这个分区
+        mkfs.ext4 -F $ext4_opts "$dev_os"             # os + installer
     elif is_use_cloud_image; then
         installer_part_size="$(get_cloud_image_part_size)"
         # 这几个系统不使用dd，而是复制文件
@@ -3175,11 +3262,11 @@ create_part() {
                     mkpart '" "' $fs 101MiB -$installer_part_size \
                     mkpart '" "' ext4 -$installer_part_size 100% \
                     set 1 esp on
-                update_part
 
-                mkfs.fat -n efi "/dev/$(xda 1)"           #1 efi
-                echo                                      #2 os 用目标系统的格式化工具
-                mkfs.ext4 -F -L installer "/dev/$(xda 3)" #3 installer
+                dev_efi="/dev/$(xda 1)"       #1 efi
+                dev_os="/dev/$(xda 2)"        #2 os 用目标系统的格式化工具
+                dev_installer="/dev/$(xda 3)" #3 installer
+
             else
                 parted /dev/$xda -s -- \
                     mklabel gpt \
@@ -3187,12 +3274,17 @@ create_part() {
                     mkpart '" "' $fs 2MiB -$installer_part_size \
                     mkpart '" "' ext4 -$installer_part_size 100% \
                     set 1 bios_grub on
-                update_part
 
-                dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=1 #1 bios_grub
-                echo                                             #2 os 用目标系统的格式化工具
-                mkfs.ext4 -F -L installer "/dev/$(xda 3)"        #3 installer
+                dev_grub="/dev/$(xda 1)"      #1 bios_grub
+                dev_os="/dev/$(xda 2)"        #2 os 用目标系统的格式化工具
+                dev_installer="/dev/$(xda 3)" #3 installer
             fi
+
+            update_part
+            [ -n "$dev_efi" ] && mkfs.fat "$dev_efi"    # efi
+            [ -n "$dev_grub" ] && fill_zero "$dev_grub" # bios_grub
+            :                                           # os 用目标系统的格式化工具
+            mkfs.ext4 -F "$dev_installer"               # installer
         else
             # 使用 dd qcow2
             # fedora debian opensuse arch gentoo
@@ -3200,10 +3292,13 @@ create_part() {
                 mklabel gpt \
                 mkpart '" "' ext4 1MiB -$installer_part_size \
                 mkpart '" "' ext4 -$installer_part_size 100%
-            update_part
 
-            mkfs.ext4 -F -L os "/dev/$(xda 1)"        #1 os
-            mkfs.ext4 -F -L installer "/dev/$(xda 2)" #2 installer
+            dev_os="/dev/$(xda 1)"        #1 os
+            dev_installer="/dev/$(xda 2)" #2 installer
+
+            update_part
+            :                             # os 不需要格式化，dd 镜像会覆盖此分区
+            mkfs.ext4 -F "$dev_installer" # installer
         fi
     elif [ "$distro" = alpine ] || [ "$distro" = arch ] || [ "$distro" = gentoo ] ||
         [ "$distro" = nixos ] || [ "$distro" = aosc ]; then
@@ -3218,10 +3313,10 @@ create_part() {
                 mkpart '" "' fat32 1MiB 101MiB \
                 mkpart '" "' ext4 101MiB 100% \
                 set 1 boot on
-            update_part
 
-            mkfs.fat "/dev/$(xda 1)"                #1 efi
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)" #2 os
+            dev_efi="/dev/$(xda 1)" #1 efi
+            dev_os="/dev/$(xda 2)"  #2 os
+
         elif is_xda_gt_2t; then
             # bios > 2t
             parted /dev/$xda -s -- \
@@ -3229,20 +3324,24 @@ create_part() {
                 mkpart '" "' ext4 1MiB 2MiB \
                 mkpart '" "' ext4 2MiB 100% \
                 set 1 bios_grub on
-            update_part
 
-            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=1 #1 bios_grub
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 2)"          #2 os
+            dev_grub="/dev/$(xda 1)" #1 bios_grub
+            dev_os="/dev/$(xda 2)"   #2 os
+
         else
             # bios
             parted /dev/$xda -s -- \
                 mklabel msdos \
                 mkpart primary ext4 1MiB 100% \
                 set 1 boot on
-            update_part
 
-            mkfs.ext4 -F $ext4_opts "/dev/$(xda 1)" #1 os
+            dev_os="/dev/$(xda 1)" #1 os
         fi
+
+        update_part
+        [ -n "$dev_efi" ] && mkfs.fat "$dev_efi"    # efi
+        [ -n "$dev_grub" ] && fill_zero "$dev_grub" # bios_grub
+        mkfs.ext4 -F $ext4_opts "$dev_os"           # os
     else
         # iso 安装红帽系或ubuntu
         # 对于红帽系是临时分区表，安装时除了 installer 分区，其他分区会重建为默认的大小
@@ -3272,11 +3371,11 @@ create_part() {
                 mkpart '" "' ext4 1025MiB -$installer_part_size \
                 mkpart '" "' ext4 -$installer_part_size 100% \
                 set 1 boot on
-            update_part
 
-            mkfs.fat -n efi "/dev/$(xda 1)"                      #1 efi
-            mkfs.ext4 -F -L os "/dev/$(xda 2)"                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 3)" #2 installer
+            dev_efi="/dev/$(xda 1)"       #1 efi
+            dev_os="/dev/$(xda 2)"        #2 os
+            dev_installer="/dev/$(xda 3)" #3 installer
+
         elif is_xda_gt_2t; then
             # bios > 2t
             parted /dev/$xda -s -- \
@@ -3285,11 +3384,10 @@ create_part() {
                 mkpart '" "' ext4 2MiB -$installer_part_size \
                 mkpart '" "' ext4 -$installer_part_size 100% \
                 set 1 bios_grub on
-            update_part
 
-            dd if=/dev/zero of="/dev/$(xda 1)" bs=1M count=1     #1 bios_grub
-            mkfs.ext4 -F -L os "/dev/$(xda 2)"                   #2 os
-            mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 3)" #3 installer
+            dev_grub="/dev/$(xda 1)"      #1 bios_grub
+            dev_os="/dev/$(xda 2)"        #2 os
+            dev_installer="/dev/$(xda 3)" #3 installer
         else
             # bios
             parted /dev/$xda -s -- \
@@ -3297,12 +3395,17 @@ create_part() {
                 mkpart primary ext4 1MiB -$installer_part_size \
                 mkpart primary ext4 -$installer_part_size 100% \
                 set 1 boot on
-            update_part
 
-            mkfs.ext4 -F -L os "/dev/$(xda 1)"                   #1 os
-            mkfs.ext4 -F -L installer $ext4_opts "/dev/$(xda 2)" #2 installer
+            dev_os="/dev/$(xda 1)"        #1 os
+            dev_installer="/dev/$(xda 2)" #2 installer
         fi
         update_part
+
+        [ -n "$dev_efi" ] && mkfs.fat "$dev_efi"              # efi
+        [ -n "$dev_grub" ] && fill_zero "$dev_grub"           # bios_grub
+        mkfs.ext4 -F -L os "$dev_os"                          # os
+        mkfs.ext4 -F -L installer $ext4_opts "$dev_installer" # installer
+        # 保留分区名，因为 redhat/ubuntu iso 安装模式依赖分区名
     fi
 
     update_part
@@ -3586,6 +3689,7 @@ modify_windows() {
     # 3. 合并分区
     # 可能 unattend.xml 已经设置了ExtendOSPartition，不过运行resize没副作用
     download $confhome/windows-resize.bat $os_dir/windows-resize.bat
+    sed -i "s/@installer_part_label@/$INSTALLER_PART_LABEL/gi" $os_dir/windows-resize.bat
     bats="$bats windows-resize.bat"
 
     # 4. 网络设置
@@ -4945,7 +5049,7 @@ download_qcow() {
     info "Download qcow2 image"
 
     mkdir -p /installer
-    mount /dev/disk/by-label/installer /installer
+    mount "/dev/$(xda installer)" /installer
 
     qcow_file=/installer/cloud_image.qcow2
     if [ -n "$img_type_warp" ]; then
@@ -5197,7 +5301,7 @@ install_fnos() {
 
     # 挂载 /os
     mkdir -p /os
-    mount "/dev/$(xda 2)" /os
+    mount "/dev/$(xda os)" /os
 
     # 下载并挂载 iso
     mkdir -p /os/installer /iso
@@ -5238,7 +5342,7 @@ install_fnos() {
     # 挂载 /os/boot/efi
     if is_efi; then
         mkdir -p /os/boot/efi
-        mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" "/dev/$(xda 1)" /os/boot/efi
+        mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" "/dev/$(xda efi)" /os/boot/efi
     fi
 
     # 复制系统
@@ -5264,19 +5368,19 @@ install_fnos() {
         # 99M 是预留的文件系统和分区表的差值
         # 一共 200M
         apk add e2fsprogs-extra parted
-        e2fsck -p -f "/dev/$(xda 2)"
-        resize2fs "/dev/$(xda 2)" "$((FNOS_OS_PART_END_M - 200))M"
+        e2fsck -p -f "/dev/$(xda os)"
+        resize2fs "/dev/$(xda os)" "$((FNOS_OS_PART_END_M - 200))M"
         update_part
-        printf "yes" | parted /dev/$xda resizepart 2 "$((FNOS_OS_PART_END_M))MiB" ---pretend-input-tty
+        printf "yes" | parted /dev/$xda resizepart "$(xda os | grep -Eo "[0-9]+$")" "$((FNOS_OS_PART_END_M))MiB" ---pretend-input-tty
         update_part
-        resize2fs "/dev/$(xda 2)"
+        resize2fs "/dev/$(xda os)"
         update_part
         apk del e2fsprogs-extra parted
 
         # 重新挂载
-        mount "/dev/$(xda 2)" /os
+        mount "/dev/$(xda os)" /os
         if is_efi; then
-            mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" "/dev/$(xda 1)" /os/boot/efi
+            mount -o "$(echo "$fstab_line_efi" | awk '{print $4}')" "/dev/$(xda efi)" /os/boot/efi
         fi
     fi
 
@@ -5305,7 +5409,7 @@ install_fnos() {
     # fstab
     {
         # /
-        uuid=$(lsblk "/dev/$(xda 2)" -no UUID)
+        uuid=$(lsblk "/dev/$(xda os)" -no UUID)
         echo "$fstab_line_os" | sed "s/%s/$uuid/"
 
         # swapfile
@@ -5314,7 +5418,7 @@ install_fnos() {
 
         # /boot/efi
         if is_efi; then
-            uuid=$(lsblk "/dev/$(xda 1)" -no UUID)
+            uuid=$(lsblk "/dev/$(xda efi)" -no UUID)
             echo "$fstab_line_efi" | sed "s/%s/$uuid/"
         fi
     } >$os_dir/etc/fstab
@@ -5450,7 +5554,7 @@ install_qcow_by_copy() {
         if is_efi; then
             # centos/oracle 要创建efi条目
             if ! grep /boot/efi /os/etc/fstab; then
-                efi_part_uuid=$(lsblk "/dev/$(xda 1)" -no UUID)
+                efi_part_uuid=$(lsblk "/dev/$(xda efi)" -no UUID)
                 echo "UUID=$efi_part_uuid /boot/efi vfat $efi_mount_opts 0 0" >>/os/etc/fstab
             fi
         else
@@ -5793,7 +5897,7 @@ EOF
         # 因为 24.04 fsuuid 对应 boot 分区
         efi_grub_cfg=$os_dir/boot/efi/EFI/ubuntu/grub.cfg
         if is_efi; then
-            os_uuid=$(lsblk -rno UUID "/dev/$(xda 2)")
+            os_uuid=$(lsblk -rno UUID "/dev/$(xda os)")
             sed -Ei "s|[0-9a-f-]{36}|$os_uuid|i" $efi_grub_cfg
 
             # 24.04 移除 boot 分区后，需要添加 /boot 路径
@@ -5807,7 +5911,7 @@ EOF
         if [ -e $force_partuuid_cfg ]; then
             if is_virt; then
                 # 更改写死的 partuuid
-                os_part_uuid=$(lsblk -rno PARTUUID "/dev/$(xda 2)")
+                os_part_uuid=$(lsblk -rno PARTUUID "/dev/$(xda os)")
                 sed -i "s/^GRUB_FORCE_PARTUUID=.*/GRUB_FORCE_PARTUUID=$os_part_uuid/" $force_partuuid_cfg
             else
                 # 独服不应该使用 initrdless boot
@@ -5902,7 +6006,7 @@ EOF
     os_part='' boot_part='' efi_part=''
     mkdir -p /nbd-test
     for part in $(lsblk /dev/nbd0p* --sort SIZE -no NAME,FSTYPE |
-        grep -E ' (ext4|xfs|fat|vfat)$' | awk '{print $1}' | tac); do
+        grep -E ' (ext4|xfs|btrfs|fat|vfat)$' | awk '{print $1}' | tac); do
         mapper_part=$part
         if $is_lvm_image && [ -e /dev/mapper/$part ]; then
             mapper_part=mapper/$part
@@ -5959,8 +6063,8 @@ EOF
     mount_nouuid /dev/$os_part /nbd/
     mount_pseudo_fs /nbd/
     case "$os_part_fstype" in
-    ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" "/dev/$(xda 2)" ;;
-    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid "/dev/$(xda 2)" ;;
+    ext4) chroot /nbd mkfs.ext4 -F -L "$os_part_label" -U "$os_part_uuid" "/dev/$(xda os)" ;;
+    xfs) chroot /nbd mkfs.xfs -f -L "$os_part_label" -m uuid=$os_part_uuid "/dev/$(xda os)" ;;
     esac
     umount -R /nbd/
 
@@ -5968,7 +6072,7 @@ EOF
 
     # 创建并挂载 /os
     mkdir -p /os
-    mount -o noatime "/dev/$(xda 2)" /os/
+    mount -o noatime "/dev/$(xda os)" /os/
 
     # 如果是 efi 则创建 /os/boot/efi
     # 如果镜像有 efi 分区也创建 /os/boot/efi，用于复制 efi 分区的文件
@@ -5979,7 +6083,7 @@ EOF
         # 预先挂载 /os/boot/efi 因为可能 boot 和 efi 在同一个分区（openeuler 24.03 arm）
         # 复制 boot 时可以会复制 efi 的文件
         if is_efi; then
-            mount -o $efi_mount_opts "/dev/$(xda 1)" /os/boot/efi/
+            mount -o $efi_mount_opts "/dev/$(xda efi)" /os/boot/efi/
         fi
     fi
 
@@ -6030,7 +6134,7 @@ EOF
     if is_efi && [ -n "$efi_part_uuid" ] && ! [ "$efi_part" = "$os_part" ]; then
         info "Copy efi partition uuid"
         apk add mtools
-        mlabel -N "$(echo $efi_part_uuid | sed 's/-//')" -i "/dev/$(xda 1)" ::$efi_part_label
+        mlabel -N "$(echo $efi_part_uuid | sed 's/-//')" -i "/dev/$(xda efi)" ::$efi_part_label
         apk del mtools
         update_part
     fi
@@ -6044,9 +6148,9 @@ EOF
 
     # 重新挂载 /os /boot/efi
     info "Re-mount disk"
-    mount -o noatime "/dev/$(xda 2)" /os/
+    mount -o noatime "/dev/$(xda os)" /os/
     if is_efi; then
-        mount -o $efi_mount_opts "/dev/$(xda 1)" /os/boot/efi/
+        mount -o $efi_mount_opts "/dev/$(xda efi)" /os/boot/efi/
     fi
 
     # 创建 swap
@@ -6154,7 +6258,7 @@ dd_qcow() {
     else
         # 将前1M dd到内存，将1M之后 dd到硬盘
         qemu-img dd if=$qcow_file of=/first-1M bs=1M count=1
-        qemu-img dd if=$qcow_file of=/dev/disk/by-label/os bs=1M skip=1
+        qemu-img dd if=$qcow_file of=/dev/$xda bs=1M skip=1
     fi
 
     # 已 dd 并断开连接 qcow，可删除 qemu-img
@@ -6302,21 +6406,23 @@ resize_after_install_cloud_image() {
 mount_part_basic_layout() {
     local os_dir=$1
     local efi_dir=$2
+    local os_fs=$3
 
-    if is_efi || is_xda_gt_2t; then
-        os_part_num=2
-    else
-        os_part_num=1
-    fi
+    # 注意 busybox mount 不支持 -m 自动创建挂载点
 
     # 挂载系统分区
-    mkdir -p $os_dir
-    mount -t ext4 "/dev/$(xda $os_part_num)" $os_dir
+    # 如果安装了 util-linux，可以自动识别文件系统类型
+    local t_opts=
+    if [ -n "$os_fs" ]; then
+        t_opts="-t $os_fs"
+    fi
+    mkdir -p "$os_dir"
+    mount $t_opts "/dev/$(xda os)" "$os_dir"
 
     # 挂载 efi 分区
     if is_efi; then
-        mkdir -p $efi_dir
-        mount -t vfat -o umask=077 "/dev/$(xda 1)" $efi_dir
+        mkdir -p "$efi_dir"
+        mount -t vfat -o umask=077 "/dev/$(xda efi)" "$efi_dir"
     fi
 }
 
@@ -6329,17 +6435,19 @@ mount_part_for_iso_installer() {
         mount_args=
     fi
 
+    # 注意 busybox mount 不支持 -m 自动创建挂载点
+
     # 挂载主分区
     mkdir -p /os
-    mount $mount_args /dev/disk/by-label/os /os
+    mount $mount_args "/dev/$(xda os)" /os
 
     # 挂载其他分区
     if is_efi; then
         mkdir -p /os/boot/efi
-        mount /dev/disk/by-label/efi /os/boot/efi
+        mount "/dev/$(xda efi)" /os/boot/efi
     fi
     mkdir -p /os/installer
-    mount $mount_args /dev/disk/by-label/installer /os/installer
+    mount $mount_args "/dev/$(xda installer)" /os/installer
 }
 
 get_dns_list_for_win() {
@@ -6669,6 +6777,40 @@ apk_add_from_edge() {
 
 apk_del_edge() {
     apk del edge
+}
+
+download_from_fedorapeople() {
+    local url=$1
+    local file=$2
+    local can_use_cn_mirror=${3:-false}
+    local grace=${4:-false}
+
+    local skip_browser_download=false
+
+    # aria2 下载，包括用 daocloud 镜像
+    local aria2c_grace=true
+    if download "$url" "$file" $can_use_cn_mirror $aria2c_grace; then
+        return
+    else
+        # anubis 屏蔽了华为云
+        # 此时跳过用浏览器下载
+        if [ $? -eq 10 ]; then
+            skip_browser_download=true
+        fi
+    fi
+
+    # 用浏览器下载
+    if ! $skip_browser_download &&
+        download_via_browser "$url" "$file" &&
+        ! is_anubis "$file"; then
+        return
+    fi
+
+    if $grace; then
+        return 1
+    else
+        error_and_exit "Failed to download $url"
+    fi
 }
 
 install_windows() {
@@ -7646,25 +7788,14 @@ EOF
 
         get_latest_virtio_dir() {
             local checksum=$1/stable-virtio/CHECKSUM
-            local dir
+            local can_use_cn_mirror=false
+            local grace=true
 
-            # 直接读取 CHECKSUM 可以兼容 fedorapeople 跳转和提供文件内容的镜像源
-            if dir=$(wget "$checksum" -O- |
-                grep -Eo -m1 'virtio-win-[0-9][^[:space:]]+\.noarch\.rpm' |
+            mkdir -p "$drv/virtio"
+            download_from_fedorapeople "$checksum" "$drv/virtio/checksum" $can_use_cn_mirror $grace >/dev/null &&
+                grep -Eo -m1 'virtio-win-[0-9][^[:space:]]+\.noarch\.rpm' "$drv/virtio/checksum" |
                 sed -E 's,^virtio-win-(.*)\.noarch\.rpm$,archive-virtio/virtio-win-\1,' |
-                grep .); then
-                echo "$dir"
-                return
-            fi
-
-            # 保留 Location 解析作为兼容逻辑
-            if dir=$(wget --spider -S "$checksum" 2>&1 >/dev/null |
-                grep -E '^  Location: ' | grep -Ewo -m1 'archive-virtio/virtio-win-[^/]+'); then
-                echo "$dir"
-                return
-            fi
-
-            return 1
+                    grep .
         }
 
         case "$nt_ver" in
@@ -7688,18 +7819,11 @@ EOF
 
         # anubis 默认策略拉黑了华为云，连验证的机会都没有
 
-        # https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/
-        # 路径是网页，可能会弹出 anubis 验证
-
         # https://fedorapeople.org/groups/virt/virtio-win/direct-downloads/stable-virtio/CHECKSUM
-        # 路径是文件，应该不会弹出 anubis 验证？
+        # 路径是文件，也会弹出 anubis 验证
         if [ "$dir" = stable-virtio ]; then
             if ! dir=$(get_latest_virtio_dir "$baseurl"); then
-                if is_any_ipv4_has_internet &&
-                    mirror_baseurl=https://files.m.daocloud.io/$(echo "$baseurl" | sed -E 's,^https?://,,i') &&
-                    dir=$(get_latest_virtio_dir "$mirror_baseurl"); then
-                    baseurl=$mirror_baseurl
-                elif [ "$arch_wim" = x86 ] || [ "$arch_wim" = x86_64 ]; then
+                if [ "$arch_wim" = x86 ] || [ "$arch_wim" = x86_64 ]; then
                     add_driver_virtio_from_rpm "$@"
                     return
                 else
@@ -7723,7 +7847,7 @@ EOF
         fi
 
         if [ "$virtio_source" = iso ]; then
-            download $baseurl/$dir/virtio-win.iso $drv/virtio.iso $can_use_cn_mirror
+            download_from_fedorapeople $baseurl/$dir/virtio-win.iso $drv/virtio.iso $can_use_cn_mirror
             mkdir -p $drv/virtio
             mount -o ro $drv/virtio.iso $drv/virtio
 
@@ -7736,7 +7860,7 @@ EOF
             fi
         else
             apk add 7zip file
-            download $baseurl/$dir/virtio-win-gt-$arch_xdd.msi $drv/virtio.msi $can_use_cn_mirror
+            download_from_fedorapeople $baseurl/$dir/virtio-win-gt-$arch_xdd.msi $drv/virtio.msi $can_use_cn_mirror
             match="FILE_*_${virtio_sys}_${arch}*"
             7z x $drv/virtio.msi -o$drv/virtio -i!$match -y -bb1
             (
@@ -8364,6 +8488,8 @@ EOF
     winpeshl_ini=$(get_path_in_correct_case /wim/Windows/System32/winpeshl.ini)
 
     download $confhome/windows-setup.bat $startnet_cmd
+    sed -i "s/@installer_part_label@/$INSTALLER_PART_LABEL/gi" $startnet_cmd
+
     # dism 手动释放镜像时用
     # sed -i "s|@image_name@|$image_name|" "$startnet.cmd"
 
@@ -8467,12 +8593,13 @@ EOF
         apk add grub-bios
         # efi 下，强制安装 mbr 引导，需要添加 --target i386-pc
         grub-install --target i386-pc --boot-directory="$(get_path_in_correct_case /os/boot)" /dev/$xda
+        os_part_uuid=$(lsblk "/dev/$(xda os)" -no UUID)
         cat <<EOF >"$(get_path_in_correct_case /os/boot/grub/grub.cfg)"
             set timeout=5
             menuentry "reinstall" {
                 insmod search
                 insmod ntldr
-                search --no-floppy --label --set=root os
+                search --no-floppy --fs-uuid --set=root $os_part_uuid
                 ntldr /$(cd /os && get_path_in_correct_case bootmgr)
             }
 EOF
@@ -8733,6 +8860,8 @@ install_redhat_ubuntu() {
             fi
         fi
 
+        installer_part_uuid=$(lsblk "/dev/$(xda installer)" -no UUID)
+
         # 正常写法应该是 ds="nocloud-net;s=https://xxx/" 但是甲骨文云的ds更优先，自己的ds根本无访问记录
         # $seed 是 https://xxx/
         cat <<EOF >$grub_cfg
@@ -8743,7 +8872,7 @@ install_redhat_ubuntu() {
             insmod all_video
             insmod search
             insmod loopback
-            search --no-floppy --label --set=root installer
+            search --no-floppy --fs-uuid --set=root $installer_part_uuid
             loopback loop /ubuntu.iso
             linux (loop)/casper/vmlinuz iso-scan/filename=/ubuntu.iso autoinstall noprompt noeject cloud-config-url=$ks $extra_cmdline extra_kernel=$kernel extra_source_id=$source_id --- $console_cmdline
             initrd (loop)/casper/initrd
@@ -8754,12 +8883,14 @@ EOF
         download $initrd /os/initrd.img
         download $squashfs /os/installer/install.img
 
+        os_part_uuid=$(lsblk "/dev/$(xda installer)" -no UUID)
+
         cat <<EOF >$grub_cfg
         set timeout=5
         menuentry "reinstall" {
             insmod all_video
             insmod search
-            search --no-floppy --label --set=root os
+            search --no-floppy --fs-uuid --set=root $os_part_uuid
             linux /vmlinuz inst.stage2=hd:LABEL=installer:/install.img inst.ks=$ks $extra_cmdline $console_cmdline
             initrd /initrd.img
         }
